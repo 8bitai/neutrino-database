@@ -1,12 +1,13 @@
 
 
 from sqlalchemy import (
-    Table, Column, Integer, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, UniqueConstraint
+    Table, Column, Integer, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, Enum as PgEnum
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY
 from sqlalchemy.sql import func, text
 from sqlalchemy import Boolean
 from neutrino_database.models.base import metadata
+from neutrino_database.models.enums import ConnectionStatus
 import uuid
 
 
@@ -170,6 +171,7 @@ strategies = Table(
     Column("tenant_id", String, nullable=False),
     Column("name", String, nullable=False),
 
+    Column("strategy_id", UUID(as_uuid=True), nullable=True),
     # Foreign keys
     Column("file_id", UUID(as_uuid=True), ForeignKey("files.id", ondelete="CASCADE"), nullable=False),
     Column("chunking_strategy_id", UUID(as_uuid=True), ForeignKey("chunking_strategies.id", ondelete="CASCADE"), nullable=False),
@@ -191,4 +193,50 @@ strategies = Table(
     # Audit fields
     Column("created_by", String, nullable=False),
     Column("updated_by", String, nullable=False),
+)
+
+
+connector_types = Table(
+    "connector_types",
+    metadata,
+
+    Column("id", String(100), primary_key=True),
+    Column("display_name", String(255)),
+    Column("category", String(100)),
+    Column("auth_type", String(50)),
+    # Note: config_schema removed - it's now stored in Connection model as it's tenant-specific
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
+)
+
+
+connections = Table(
+    "connections",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("connector_type_id", String(100), ForeignKey("connector_types.id"), nullable=False),
+    Column("status", PgEnum(ConnectionStatus), nullable=False, server_default=ConnectionStatus.active.name),
+    Column("created_by", String(255)),
+    Column("config_schema", Text),  # Tenant-specific configuration (e.g., SharePoint webUrl)
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
+)
+
+
+credentials = Table(
+    "credentials",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("connection_id", UUID(as_uuid=True), ForeignKey("connections.id"), nullable=False),
+    Column("resource", String(100), nullable=False),
+    Column("access_token_encrypted", Text),
+    Column("access_token_expires_at", TIMESTAMP(timezone=True)),
+    Column("refresh_token_encrypted", Text),
+    Column("scopes_or_resource", Text),
+    Column("metadata", Text),  # Column name is "metadata" in DB
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
 )
