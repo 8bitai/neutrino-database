@@ -170,6 +170,7 @@ strategies = Table(
     Column("tenant_id", String, nullable=False),
     Column("name", String, nullable=False),
 
+    Column("strategy_id", UUID(as_uuid=True), nullable=True),
     # Foreign keys
     Column("file_id", UUID(as_uuid=True), ForeignKey("files.id", ondelete="CASCADE"), nullable=False),
     Column("chunking_strategy_id", UUID(as_uuid=True), ForeignKey("chunking_strategies.id", ondelete="CASCADE"), nullable=False),
