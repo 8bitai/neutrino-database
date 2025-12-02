@@ -193,6 +193,7 @@ strategies = Table(
     # Audit fields
     Column("created_by", String, nullable=False),
     Column("updated_by", String, nullable=False),
+    Column("is_deleted", Boolean, nullable=False, server_default=text("false")),
 )
 
 
