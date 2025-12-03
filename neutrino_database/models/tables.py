@@ -34,6 +34,8 @@ files = Table(
 
     Column("created_by", String, nullable=False),
     Column("is_deleted", Boolean, nullable=False, server_default=text("false")),
+
+    Column("permission_mirroring_status", String(50), nullable=False, server_default=text("'NOT INITIATED'")),
 )
 
 
