@@ -18,6 +18,8 @@ files = Table(
     Column("tenant_id", String, nullable=False),
     Column("datasource_id", UUID(as_uuid=True), ForeignKey("datasources.id"), nullable=False),
 
+    Column("external_file_info", JSONB, nullable=True, comment="Stores file_id and drive_id of external sources, e.g., SharePoint"),
+
     # File info
     Column("original_filename", String, nullable=False),
     Column("file_type", String(20), nullable=False),
