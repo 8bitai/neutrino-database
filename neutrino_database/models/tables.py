@@ -77,8 +77,7 @@ ingestion_jobs = Table(
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()),
 
-    Column("created_by", String, nullable=False),
-    Column("is_deleted", Boolean, nullable=False, server_default=text("false")),
+    Column("created_by", String, nullable=False)
 
 )
 
