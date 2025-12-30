@@ -32,7 +32,7 @@ def upgrade() -> None:
     )
     op.create_table('datasources',
     sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('tenant_id', sa.UUID(as_uuid=False), nullable=False),
+    sa.Column('tenant_id', sa.String(), nullable=False),
     sa.Column('name', sa.String(), nullable=False),
     sa.Column('type', sa.String(), nullable=False),
     sa.Column('config', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
@@ -42,7 +42,7 @@ def upgrade() -> None:
     )
     op.create_table('files',
     sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('tenant_id', sa.UUID(as_uuid=False), nullable=False),
+    sa.Column('tenant_id', sa.String(), nullable=False),
     sa.Column('datasource_id', sa.UUID(), nullable=False),
     sa.Column('original_filename', sa.String(), nullable=False),
     sa.Column('file_type', sa.String(length=20), nullable=False),
@@ -59,7 +59,7 @@ def upgrade() -> None:
     )
     op.create_table('chunk',
     sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('tenant_id', sa.UUID(as_uuid=False), nullable=False),
+    sa.Column('tenant_id', sa.String(), nullable=False),
     sa.Column('file_id', sa.UUID(), nullable=False),
     sa.Column('page_no', sa.Integer(), server_default=sa.text('0'), nullable=True),
     sa.Column('ord', sa.Integer(), nullable=True),
@@ -72,7 +72,7 @@ def upgrade() -> None:
     op.create_index('idx_chunk_file_page_hash', 'chunk', ['file_id', 'page_no', 'chunk_hash'], unique=True)
     op.create_table('embedding',
     sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('tenant_id', sa.UUID(as_uuid=False), nullable=False),
+    sa.Column('tenant_id', sa.String(), nullable=False),
     sa.Column('file_id', sa.UUID(), nullable=False),
     sa.Column('chunk_hash', sa.String(), nullable=False),
     sa.Column('dense_vector', postgresql.ARRAY(sa.Float()), nullable=True),
@@ -87,7 +87,7 @@ def upgrade() -> None:
     op.create_index('idx_embedding_tenant_file_chunk_unique', 'embedding', ['tenant_id', 'file_id', 'chunk_hash'], unique=True)
     op.create_table('ingestion_jobs',
     sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('tenant_id', sa.UUID(as_uuid=False), nullable=False),
+    sa.Column('tenant_id', sa.String(), nullable=False),
     sa.Column('file_id', sa.UUID(), nullable=False),
     sa.Column('overall_status', sa.String(length=50), server_default=sa.text("'READY_FOR_INGESTION'"), nullable=False),
     sa.Column('progress_status', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
@@ -100,7 +100,7 @@ def upgrade() -> None:
     )
     op.create_table('parsing',
     sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('tenant_id', sa.UUID(as_uuid=False), nullable=False),
+    sa.Column('tenant_id', sa.String(), nullable=False),
     sa.Column('file_id', sa.UUID(), nullable=False),
     sa.Column('page_no', sa.Integer(), nullable=False),
     sa.Column('page_text', sa.Text(), nullable=False),
@@ -113,7 +113,7 @@ def upgrade() -> None:
     op.create_index('idx_parsing_file_page', 'parsing', ['file_id', 'page_no'], unique=True)
     op.create_table('strategies',
     sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('tenant_id', sa.UUID(as_uuid=False), nullable=False),
+    sa.Column('tenant_id', sa.String(), nullable=False),
     sa.Column('name', sa.String(), nullable=False),
     sa.Column('file_id', sa.UUID(), nullable=False),
     sa.Column('chunking_strategy_id', sa.UUID(), nullable=False),
@@ -130,7 +130,7 @@ def upgrade() -> None:
     )
     op.create_table('index_sync',
     sa.Column('doc_id', sa.UUID(), nullable=False),
-    sa.Column('tenant_id', sa.UUID(as_uuid=False), nullable=False),
+    sa.Column('tenant_id', sa.String(), nullable=False),
     sa.Column('file_id', sa.UUID(), nullable=False),
     sa.Column('chunk_id', sa.UUID(), nullable=False),
     sa.Column('chunk_hash', sa.Text(), nullable=False),

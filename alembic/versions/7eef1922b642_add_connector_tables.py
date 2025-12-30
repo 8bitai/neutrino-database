@@ -71,5 +71,4 @@ def downgrade() -> None:
     op.drop_table('credentials')
     op.drop_table('connections')
     op.drop_table('connector_types')
-    op.execute('DROP TYPE IF EXISTS connectionstatus')
     # ### end Alembic commands ###
