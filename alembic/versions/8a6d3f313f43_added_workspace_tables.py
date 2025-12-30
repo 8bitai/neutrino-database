@@ -125,3 +125,5 @@ def downgrade() -> None:
     op.drop_index('ix_workspace_tenant_status', table_name='workspace')
     op.drop_index('ix_workspace_tenant', table_name='workspace')
     op.drop_table('workspace')
+    op.execute("DROP TYPE workspace_status")
+    op.execute("DROP TYPE workspace_access_status")

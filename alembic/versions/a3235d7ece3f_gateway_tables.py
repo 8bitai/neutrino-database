@@ -55,7 +55,7 @@ def upgrade() -> None:
                     sa.Column('id', sa.UUID(as_uuid=False), nullable=False),
         sa.Column('name', sa.String(length=255), nullable=False),
         sa.Column('org_external_id', sa.String(length=200), nullable=False),
-        sa.Column('status', sa.Enum('PENDING', 'ACTIVE', 'SUSPENDED', 'DELETED', name='tenant_status'),
+        sa.Column('status', sa.Enum('PENDING', 'ACTIVE', 'REJECTED', 'DELETED', 'PENDING_OPENFGA_SETUP', name='tenant_status'),
                   nullable=False),
         sa.Column('allowed_modules', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column('status_updated_at', sa.TIMESTAMP(timezone=True), nullable=True),

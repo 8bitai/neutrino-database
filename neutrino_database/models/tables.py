@@ -226,12 +226,16 @@ connections = Table(
 
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
     Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
     Column("connector_type_id", String(100), ForeignKey("connector_types.id"), nullable=False),
     Column("status", PgEnum(ConnectionStatus), nullable=False, server_default=ConnectionStatus.active.name),
     Column("created_by", String(255)),
-    Column("config_schema", Text),  # Tenant-specific configuration (e.g., SharePoint webUrl)
+    Column("config_schema", Text),  # Workspace-specific configuration (e.g., SharePoint webUrl)
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
+
+    Index("ix_connection_workspace", "workspace_id"),
+    UniqueConstraint("workspace_id", "connector_type_id", name="ux_connection_workspace_connector_type"),
 )
 
 
