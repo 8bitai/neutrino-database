@@ -98,12 +98,23 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Drop FK constraints in reverse order
-    op.drop_constraint('fk_strategies_tenant_id', 'strategies', type_='foreignkey')
-    op.drop_constraint('fk_index_sync_tenant_id', 'index_sync', type_='foreignkey')
-    op.drop_constraint('fk_embedding_tenant_id', 'embedding', type_='foreignkey')
-    op.drop_constraint('fk_chunk_tenant_id', 'chunk', type_='foreignkey')
-    op.drop_constraint('fk_parsing_tenant_id', 'parsing', type_='foreignkey')
-    op.drop_constraint('fk_ingestion_jobs_tenant_id', 'ingestion_jobs', type_='foreignkey')
-    op.drop_constraint('fk_files_tenant_id', 'files', type_='foreignkey')
-    op.drop_constraint('fk_datasources_tenant_id', 'datasources', type_='foreignkey')
+    # Drop FK constraints in reverse order - only if tables exist
+    from sqlalchemy import inspect
+
+    connection = op.get_bind()
+    inspector = inspect(connection)
+
+    tables_to_check = [
+        ('strategies', 'fk_strategies_tenant_id'),
+        ('index_sync', 'fk_index_sync_tenant_id'),
+        ('embedding', 'fk_embedding_tenant_id'),
+        ('chunk', 'fk_chunk_tenant_id'),
+        ('parsing', 'fk_parsing_tenant_id'),
+        ('ingestion_jobs', 'fk_ingestion_jobs_tenant_id'),
+        ('files', 'fk_files_tenant_id'),
+        ('datasources', 'fk_datasources_tenant_id'),
+    ]
+
+    for table_name, constraint_name in tables_to_check:
+        if table_name in inspector.get_table_names():
+            op.drop_constraint(constraint_name, table_name, type_='foreignkey')
