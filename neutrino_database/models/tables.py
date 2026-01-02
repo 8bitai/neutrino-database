@@ -1,5 +1,3 @@
-from enum import Enum
-
 from sqlalchemy import (
     Table, Column, Integer, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
     UniqueConstraint
@@ -19,8 +17,9 @@ files = Table(
     "files",
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", String, ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
     Column("datasource_id", UUID(as_uuid=True), ForeignKey("datasources.id"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
 
     Column("external_file_info", JSONB, nullable=True, comment="Stores file_id and drive_id of external sources, e.g., SharePoint"),
 
@@ -50,7 +49,8 @@ datasources = Table(
     metadata,
 
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", String, ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
     Column("name", String, nullable=False),
     Column("type", String, nullable=False),
     Column("config", JSONB, nullable=True),
@@ -65,8 +65,9 @@ ingestion_jobs = Table(
 
     # Identifiers
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", String, ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
     Column("file_id", UUID(as_uuid=True), ForeignKey("files.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
 
     # Status
     Column("overall_status", String(50), nullable=False, server_default=text("'READY_FOR_INGESTION'")),
@@ -87,8 +88,9 @@ parsing = Table(
     metadata,
 
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", String,ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("tenant_id", UUID(as_uuid=False),ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
     Column("file_id", UUID(as_uuid=True), ForeignKey("files.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
 
     Column("page_no", Integer, nullable=False),
     Column("page_text", Text, nullable=False),
@@ -106,8 +108,9 @@ chunk = Table(
 
     # Identifiers
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", String, ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
     Column("file_id", UUID(as_uuid=True), ForeignKey("files.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
 
     Column("page_no", Integer, nullable=True, server_default=text("0")),
     Column("ord", Integer, nullable=True),
@@ -125,9 +128,10 @@ embedding = Table(
 
     # Identifiers
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", String, ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
     Column("file_id", UUID(as_uuid=True), ForeignKey("files.id", ondelete="CASCADE"), nullable=False),
     Column("chunk_hash", String, nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
 
     # Dense vector - simple float array
     Column("dense_vector", ARRAY(Float), nullable=True),
@@ -149,9 +153,10 @@ index_sync = Table(
     "index_sync",
     metadata,
     Column("doc_id", UUID(as_uuid=True), primary_key=True),
-    Column("tenant_id", String, ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
     Column("file_id", UUID(as_uuid=True), ForeignKey("files.id", ondelete="CASCADE"), nullable=False),
     Column("chunk_id", UUID(as_uuid=True), ForeignKey("chunk.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
 
     Column("chunk_hash", Text, nullable=False),
     Column("ack_at", TIMESTAMP(timezone=True), nullable=True),
@@ -177,10 +182,10 @@ strategies = Table(
     metadata,
 
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", String, ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
     Column("name", String, nullable=False),
-
     Column("strategy_id", UUID(as_uuid=True), nullable=True),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
     # Foreign keys
     Column("file_id", UUID(as_uuid=True), ForeignKey("files.id", ondelete="CASCADE"), nullable=False),
     Column("chunking_strategy_id", UUID(as_uuid=True), ForeignKey("chunking_strategies.id", ondelete="CASCADE"), nullable=False),
