@@ -8,7 +8,8 @@ from sqlalchemy import Boolean
 from neutrino_database.models.base import metadata
 
 from neutrino_database.models.enums import ConnectionStatus, KeyStatusEnum, TenantStatusEnum, AllowedModuleEnum, \
-    UserStatusEnum, IdpProviderEnum, MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum
+    UserStatusEnum, IdpProviderEnum, MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum, \
+    RouterModeEnum
 
 import uuid
 
@@ -553,4 +554,21 @@ workspace_invitation = Table(
     Index("ix_workspace_invitation_workspace_email", "workspace_id", "email"),
     Index("ix_workspace_invitation_email", "email"),
     Index("ix_workspace_invitation_expires_at", "expires_at"),
+)
+
+orchestrator_config = Table(
+    "orchestrator_config",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("workspace_id", UUID(as_uuid=True), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False, unique=True),
+
+    Column("router_mode", PgEnum(RouterModeEnum, name="router_mode"), nullable=False, server_default=RouterModeEnum.AUTO.name),
+    Column("router_classification_prompt", Text, nullable=True),
+    Column("response_synthesis_prompt", Text, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_orchestrator_config_workspace", "workspace_id"),
 )

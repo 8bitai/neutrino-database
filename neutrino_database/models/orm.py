@@ -1,6 +1,7 @@
 from neutrino_database.models.enums import (
     KeyStatusEnum, TenantStatusEnum, UserStatusEnum, IdpProviderEnum,
-    MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum
+    MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum,
+    RouterModeEnum
 )
 from neutrino_database.models import tables
 from neutrino_database.models.base import Base
@@ -481,6 +482,13 @@ class Workspace(Base):
         cascade="all, delete-orphan"
     )
 
+    orchestrator_config: Mapped[Optional["OrchestratorConfig"]] = relationship(
+        "OrchestratorConfig",
+        back_populates="workspace",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
+
 
 class WorkspaceMember(Base):
     """ORM wrapper for workspace_member table"""
@@ -565,4 +573,24 @@ class WorkspaceInvitation(Base):
         "User",
         foreign_keys="WorkspaceInvitation.inviter",
         back_populates="workspace_invitations_sent"
+    )
+
+
+class OrchestratorConfig(Base):
+    """ORM wrapper for orchestrator_config table"""
+    __table__ = tables.orchestrator_config
+
+    # Type hints for all columns
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    router_mode: Mapped[RouterModeEnum]
+    router_classification_prompt: Mapped[Optional[str]]
+    response_synthesis_prompt: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+    # Relationships
+    workspace: Mapped["Workspace"] = relationship(
+        "Workspace",
+        back_populates="orchestrator_config"
     )

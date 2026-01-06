@@ -53,3 +53,9 @@ class WorkspaceAccessStatusEnum(str, Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+
+class RouterModeEnum(str, Enum):
+    AUTO = "AUTO"
+    SEARCH_ONLY = "SEARCH_ONLY"
+    ACTION_ONLY = "ACTION_ONLY"
