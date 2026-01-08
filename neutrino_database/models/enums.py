@@ -60,7 +60,7 @@ class RouterModeEnum(str, Enum):
     SEARCH_ONLY = "SEARCH_ONLY"
     ACTION_ONLY = "ACTION_ONLY"
 
-class RunStatusEnum(str, Enum):
+class RunStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
     WAITING_INPUT = "waiting_input"
@@ -69,7 +69,7 @@ class RunStatusEnum(str, Enum):
     CANCELLED = "cancelled"
 
 
-class AgentMessageRoleEnum(str, Enum):
+class AgentMessageRole(str, Enum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
