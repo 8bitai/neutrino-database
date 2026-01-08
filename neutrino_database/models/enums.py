@@ -59,3 +59,18 @@ class RouterModeEnum(str, Enum):
     AUTO = "AUTO"
     SEARCH_ONLY = "SEARCH_ONLY"
     ACTION_ONLY = "ACTION_ONLY"
+
+class RunStatusEnum(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    WAITING_INPUT = "waiting_input"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class AgentMessageRoleEnum(str, Enum):
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+    OBSERVATION = "observation"

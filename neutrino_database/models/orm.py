@@ -1,7 +1,7 @@
 from neutrino_database.models.enums import (
     KeyStatusEnum, TenantStatusEnum, UserStatusEnum, IdpProviderEnum,
     MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum,
-    RouterModeEnum
+    RouterModeEnum, AgentMessageRoleEnum, RunStatusEnum
 )
 from neutrino_database.models import tables
 from neutrino_database.models.base import Base
@@ -140,6 +140,13 @@ class Tenant(Base):
         passive_deletes=True
     )
 
+    runs: Mapped[List["Run"]] = relationship(
+        "Run",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+        passive_deletes=True
+    )
+
 
 class User(Base):
     """ORM wrapper for user table"""
@@ -242,6 +249,13 @@ class User(Base):
         back_populates="inviter_user"
     )
 
+    runs: Mapped[List["Run"]] = relationship(
+        "Run",
+        foreign_keys="Run.user_id",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True
+    )
 
 class TenantIdentity(Base):
     """ORM wrapper for tenant_identity table"""
@@ -396,6 +410,13 @@ class Chat(Base):
         order_by="Message.created_at"
     )
 
+    runs: Mapped[List["Run"]] = relationship(
+        "Run",
+        foreign_keys="Run.session_id",
+        back_populates="chat",
+        cascade="all, delete-orphan"
+    )
+
 
 class Message(Base):
     """ORM wrapper for message table"""
@@ -429,6 +450,11 @@ class Message(Base):
         back_populates="messages"
     )
 
+    runs: Mapped[List["Run"]] = relationship(
+        "Run",
+        back_populates="message",
+        cascade="all, delete-orphan"
+    )
 
 class Workspace(Base):
     """ORM wrapper for workspace table"""
@@ -487,6 +513,13 @@ class Workspace(Base):
         back_populates="workspace",
         uselist=False,
         cascade="all, delete-orphan"
+    )
+
+    runs: Mapped[List["Run"]] = relationship(
+        "Run",
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+        passive_deletes=True
     )
 
 
@@ -593,4 +626,111 @@ class OrchestratorConfig(Base):
     workspace: Mapped["Workspace"] = relationship(
         "Workspace",
         back_populates="orchestrator_config"
+    )
+
+class Run(Base):
+    """Top level run record for each agent request."""
+    __table__ = tables.runs
+
+    # Type hints for all columns
+    id: Mapped[str]
+    message_id: Mapped[str]
+    session_id: Mapped[Optional[str]]
+    tenant_id: Mapped[str]
+    workspace_id: Mapped[str]
+    user_id: Mapped[Optional[str]]
+    status: Mapped[RunStatusEnum]
+    input_message: Mapped[str]
+    final_answer: Mapped[Optional[str]]
+    sources: Mapped[Optional[dict]]
+    waiting_instance_id: Mapped[Optional[str]]
+    input_request: Mapped[Optional[dict]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+    # Relationships
+    message: Mapped["Message"] = relationship(
+        "Message",
+        foreign_keys="Run.message_id",
+        back_populates="runs"
+    )
+
+    chat: Mapped[Optional["Chat"]] = relationship(
+        "Chat",
+        foreign_keys="Run.session_id",
+        back_populates="runs"
+    )
+
+    tenant: Mapped["Tenant"] = relationship(
+        "Tenant",
+        foreign_keys="Run.tenant_id",
+        back_populates="runs"
+    )
+
+    workspace: Mapped["Workspace"] = relationship(
+        "Workspace",
+        foreign_keys="Run.workspace_id",
+        back_populates="runs"
+    )
+
+    user: Mapped[Optional["User"]] = relationship(
+        "User",
+        foreign_keys="Run.user_id",
+        back_populates="runs"
+    )
+
+    conversations: Mapped[List["ReactConversation"]] = relationship(
+        "ReactConversation",
+        back_populates="run",
+        cascade="all, delete-orphan"
+    )
+
+    events: Mapped[List["RunEvent"]] = relationship(
+        "RunEvent",
+        back_populates="run",
+        cascade="all, delete-orphan"
+    )
+
+
+class ReactConversation(Base):
+    """ReAct messages within a run, supports delegation levels."""
+    __table__ = tables.react_conversations
+
+    # Type hints for all columns
+    id: Mapped[str]
+    run_id: Mapped[str]
+    instance_id: Mapped[Optional[str]]
+    delegation_level: Mapped[int]
+    agent_name: Mapped[str]
+    role: Mapped[AgentMessageRoleEnum]
+    content: Mapped[str]
+    tool_name: Mapped[Optional[str]]
+    tool_params: Mapped[Optional[dict]]
+    created_at: Mapped[datetime]
+
+    # Relationships
+    run: Mapped["Run"] = relationship(
+        "Run",
+        back_populates="conversations"
+    )
+
+
+class RunEvent(Base):
+    """Events for SSE streaming and audit trail."""
+    __table__ = tables.run_events
+
+    # Type hints for all columns
+    id: Mapped[str]
+    run_id: Mapped[str]
+    sequence: Mapped[int]
+    event_type: Mapped[str]
+    agent_name: Mapped[Optional[str]]
+    instance_id: Mapped[Optional[str]]
+    data: Mapped[Optional[dict]]
+    created_at: Mapped[datetime]
+
+    # Relationships
+    run: Mapped["Run"] = relationship(
+        "Run",
+        back_populates="events"
     )
