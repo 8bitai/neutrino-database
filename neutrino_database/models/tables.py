@@ -9,7 +9,7 @@ from neutrino_database.models.base import metadata
 
 from neutrino_database.models.enums import ConnectionStatus, KeyStatusEnum, TenantStatusEnum, AllowedModuleEnum, \
     UserStatusEnum, IdpProviderEnum, MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum, \
-    RouterModeEnum, RunStatusEnum, AgentMessageRoleEnum
+    RouterModeEnum, RunStatus, AgentMessageRole
 
 import uuid
 
@@ -583,7 +583,7 @@ runs = Table(
     Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
     Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
     Column("user_id", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
-    Column("status", PgEnum(RunStatusEnum, name="run_status"), nullable=False, server_default=text("'pending'")),
+    Column("status", PgEnum(RunStatus, name="run_status",values_callable=lambda x: [e.value for e in x]), nullable=False, server_default=text("'pending'")),
     Column("input_message", Text, nullable=False),
     Column("final_answer", Text, nullable=True),
     Column("sources", JSONB, nullable=True),  # Citation sources from enterprise_search
@@ -614,7 +614,7 @@ react_conversations = Table(
     Column("instance_id", String(50), nullable=True),  # Sub-agent invocation ID (prefix + ULID)
     Column("delegation_level", Integer, nullable=False, server_default=text("0")),  # 0=main, 1=sub-agent
     Column("agent_name", String(100), nullable=False),
-    Column("role", PgEnum(AgentMessageRoleEnum, name="agent_message_role"), nullable=False),
+    Column("role", PgEnum(AgentMessageRole, name="agent_message_role",values_callable=lambda x: [e.value for e in x]), nullable=False),
     Column("content", Text, nullable=False),
     Column("tool_name", String(100), nullable=True),
     Column("tool_params", JSONB, nullable=True),

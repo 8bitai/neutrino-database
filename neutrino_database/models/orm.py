@@ -1,7 +1,7 @@
 from neutrino_database.models.enums import (
     KeyStatusEnum, TenantStatusEnum, UserStatusEnum, IdpProviderEnum,
     MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum,
-    RouterModeEnum, AgentMessageRoleEnum, RunStatusEnum
+    RouterModeEnum, AgentMessageRole, RunStatus
 )
 from neutrino_database.models import tables
 from neutrino_database.models.base import Base
@@ -639,7 +639,7 @@ class Run(Base):
     tenant_id: Mapped[str]
     workspace_id: Mapped[str]
     user_id: Mapped[Optional[str]]
-    status: Mapped[RunStatusEnum]
+    status: Mapped[RunStatus]
     input_message: Mapped[str]
     final_answer: Mapped[Optional[str]]
     sources: Mapped[Optional[dict]]
@@ -702,7 +702,7 @@ class ReactConversation(Base):
     instance_id: Mapped[Optional[str]]
     delegation_level: Mapped[int]
     agent_name: Mapped[str]
-    role: Mapped[AgentMessageRoleEnum]
+    role: Mapped[AgentMessageRole]
     content: Mapped[str]
     tool_name: Mapped[Optional[str]]
     tool_params: Mapped[Optional[dict]]
