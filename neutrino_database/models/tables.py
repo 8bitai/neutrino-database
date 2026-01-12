@@ -9,7 +9,7 @@ from neutrino_database.models.base import metadata
 
 from neutrino_database.models.enums import ConnectionStatus, KeyStatusEnum, TenantStatusEnum, AllowedModuleEnum, \
     UserStatusEnum, IdpProviderEnum, MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum, \
-    RouterModeEnum, RunStatus, AgentMessageRole
+    RouterModeEnum, RetrievalStrategyEnum, RunStatus, AgentMessageRole
 
 import uuid
 
@@ -566,6 +566,10 @@ orchestrator_config = Table(
     Column("router_mode", PgEnum(RouterModeEnum, name="router_mode"), nullable=False, server_default=RouterModeEnum.AUTO.name),
     Column("router_classification_prompt", Text, nullable=True),
     Column("response_synthesis_prompt", Text, nullable=True),
+
+    # Retrieval strategy configuration
+    Column("retrieval_strategy", PgEnum(RetrievalStrategyEnum, name="retrieval_strategy"), nullable=False, server_default=RetrievalStrategyEnum.HYBRID.name),
+    Column("retrieval_config", JSONB, nullable=False, server_default=text("'{\"top_k\": 3, \"semantic_weight\": 0.3}'::jsonb")),
 
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),

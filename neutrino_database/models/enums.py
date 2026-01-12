@@ -60,6 +60,13 @@ class RouterModeEnum(str, Enum):
     SEARCH_ONLY = "SEARCH_ONLY"
     ACTION_ONLY = "ACTION_ONLY"
 
+
+class RetrievalStrategyEnum(str, Enum):
+    SEMANTIC = "SEMANTIC"
+    KEYWORD = "KEYWORD"
+    HYBRID = "HYBRID"
+    AGENTIC = "AGENTIC"
+
 class RunStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
