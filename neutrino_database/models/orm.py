@@ -1,7 +1,7 @@
 from neutrino_database.models.enums import (
     KeyStatusEnum, TenantStatusEnum, UserStatusEnum, IdpProviderEnum,
     MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum,
-    RouterModeEnum, AgentMessageRole, RunStatus
+    RouterModeEnum, RetrievalStrategyEnum, AgentMessageRole, RunStatus
 )
 from neutrino_database.models import tables
 from neutrino_database.models.base import Base
@@ -619,6 +619,8 @@ class OrchestratorConfig(Base):
     router_mode: Mapped[RouterModeEnum]
     router_classification_prompt: Mapped[Optional[str]]
     response_synthesis_prompt: Mapped[Optional[str]]
+    retrieval_strategy: Mapped[RetrievalStrategyEnum]
+    retrieval_config: Mapped[dict]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 
