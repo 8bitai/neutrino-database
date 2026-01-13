@@ -34,6 +34,7 @@ class UserStatusEnum(str, Enum):
 
 class IdpProviderEnum(str, Enum):
     AZURE_AD = "AZURE_AD"
+    GOOGLE_IDENTITY = "GOOGLE_IDENTITY"
 
 class MemberSourceEnum(str, Enum):
     """How we discovered this member"""
