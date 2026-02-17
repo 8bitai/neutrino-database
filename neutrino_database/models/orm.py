@@ -1,3 +1,4 @@
+from neutrino_database.models.credentials.api_keys import  llm_providers
 from neutrino_database.models.enums import (
     KeyStatusEnum, TenantStatusEnum, UserStatusEnum, IdpProviderEnum,
     MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum,
@@ -255,6 +256,12 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
         passive_deletes=True
+    )
+
+    created_llm_providers: Mapped[List["LLMProvider"]] = relationship(
+        "LLMProvider",
+        foreign_keys="LLMProvider.created_by",
+        back_populates="creator"
     )
 
 class TenantIdentity(Base):
@@ -522,6 +529,12 @@ class Workspace(Base):
         passive_deletes=True
     )
 
+    llm_providers: Mapped[List["LLMProvider"]] = relationship(
+        "LLMProvider",
+        back_populates="workspace",
+        cascade="all, delete-orphan"
+    )
+
 
 class WorkspaceMember(Base):
     """ORM wrapper for workspace_member table"""
@@ -735,4 +748,34 @@ class RunEvent(Base):
     run: Mapped["Run"] = relationship(
         "Run",
         back_populates="events"
+    )
+
+class LLMProvider(Base):
+    """ORM wrapper for llm_providers table"""
+    __table__ = llm_providers
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    service_type: Mapped[str]
+    display_name: Mapped[str]
+    encrypted_value: Mapped[str]
+    encryption_method: Mapped[str]
+    connection_config: Mapped[dict]
+    model_config: Mapped[dict]
+    is_active: Mapped[bool]
+    is_deleted: Mapped[bool]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+    created_by: Mapped[Optional[str]]
+
+    # Relationships
+    workspace: Mapped["Workspace"] = relationship(
+        "Workspace",
+        back_populates="llm_providers"
+    )
+
+    creator: Mapped[Optional["User"]] = relationship(
+        "User",
+        foreign_keys="LLMProvider.created_by",
+        back_populates="created_llm_providers"
     )
