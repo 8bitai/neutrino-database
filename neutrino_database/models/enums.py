@@ -82,3 +82,12 @@ class AgentMessageRole(str, Enum):
     USER = "user"
     ASSISTANT = "assistant"
     OBSERVATION = "observation"
+
+
+class ServiceType(str, Enum):
+    """Supported AI service providers"""
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    GEMINI = "gemini"
+    AZURE_OPENAI = "azure_openai"
+    LANDINGAI = "landingai"
