@@ -34,6 +34,7 @@ class UserStatusEnum(str, Enum):
 
 class IdpProviderEnum(str, Enum):
     AZURE_AD = "AZURE_AD"
+    GOOGLE_IDENTITY = "GOOGLE_IDENTITY"
 
 class MemberSourceEnum(str, Enum):
     """How we discovered this member"""
@@ -53,3 +54,31 @@ class WorkspaceAccessStatusEnum(str, Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+
+class RouterModeEnum(str, Enum):
+    AUTO = "AUTO"
+    SEARCH_ONLY = "SEARCH_ONLY"
+    ACTION_ONLY = "ACTION_ONLY"
+
+
+class RetrievalStrategyEnum(str, Enum):
+    SEMANTIC = "SEMANTIC"
+    KEYWORD = "KEYWORD"
+    HYBRID = "HYBRID"
+    AGENTIC = "AGENTIC"
+
+class RunStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    WAITING_INPUT = "waiting_input"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class AgentMessageRole(str, Enum):
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+    OBSERVATION = "observation"

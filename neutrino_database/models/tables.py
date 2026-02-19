@@ -8,7 +8,8 @@ from sqlalchemy import Boolean
 from neutrino_database.models.base import metadata
 
 from neutrino_database.models.enums import ConnectionStatus, KeyStatusEnum, TenantStatusEnum, AllowedModuleEnum, \
-    UserStatusEnum, IdpProviderEnum, MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum
+    UserStatusEnum, IdpProviderEnum, MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum, \
+    RouterModeEnum, RetrievalStrategyEnum, RunStatus, AgentMessageRole
 
 import uuid
 
@@ -553,4 +554,93 @@ workspace_invitation = Table(
     Index("ix_workspace_invitation_workspace_email", "workspace_id", "email"),
     Index("ix_workspace_invitation_email", "email"),
     Index("ix_workspace_invitation_expires_at", "expires_at"),
+)
+
+orchestrator_config = Table(
+    "orchestrator_config",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("workspace_id", UUID(as_uuid=True), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False, unique=True),
+
+    Column("router_mode", PgEnum(RouterModeEnum, name="router_mode"), nullable=False, server_default=RouterModeEnum.AUTO.name),
+    Column("router_classification_prompt", Text, nullable=True),
+    Column("response_synthesis_prompt", Text, nullable=True),
+
+    # Retrieval strategy configuration
+    Column("retrieval_strategy", PgEnum(RetrievalStrategyEnum, name="retrieval_strategy"), nullable=False, server_default=RetrievalStrategyEnum.HYBRID.name),
+    Column("retrieval_config", JSONB, nullable=False, server_default=text("'{\"top_k\": 3, \"semantic_weight\": 0.3}'::jsonb")),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_orchestrator_config_workspace", "workspace_id"),
+)
+
+runs = Table(
+    "runs",
+    metadata,
+
+    Column("id", String(26), primary_key=True),  # ULID
+    Column("message_id", UUID(as_uuid=False), ForeignKey("message.id", ondelete="CASCADE"), nullable=False),
+    Column("session_id", UUID(as_uuid=False), ForeignKey("chat.id", ondelete="CASCADE"), nullable=True),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+    Column("user_id", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+    Column("status", PgEnum(RunStatus, name="run_status",values_callable=lambda x: [e.value for e in x]), nullable=False, server_default=text("'pending'")),
+    Column("input_message", Text, nullable=False),
+    Column("final_answer", Text, nullable=True),
+    Column("sources", JSONB, nullable=True),  # Citation sources from enterprise_search
+
+    # HITL (Human-in-the-Loop) support
+    Column("waiting_instance_id", String(50), nullable=True),  # Which agent instance is waiting
+    Column("input_request", JSONB, nullable=True),  # {"question": "...", "form_schema": {...}}
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_runs_message_id", "message_id"),
+    Index("ix_runs_session_id", "session_id"),
+    Index("ix_runs_tenant_id", "tenant_id"),
+    Index("ix_runs_workspace_id", "workspace_id"),
+    Index("ix_runs_user_id", "user_id"),
+    Index("ix_runs_status", "status"),
+)
+
+
+
+react_conversations = Table(
+    "react_conversations",
+    metadata,
+
+    Column("id", String(26), primary_key=True),  # ULID
+    Column("run_id", String(26), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False),
+    Column("instance_id", String(50), nullable=True),  # Sub-agent invocation ID (prefix + ULID)
+    Column("delegation_level", Integer, nullable=False, server_default=text("0")),  # 0=main, 1=sub-agent
+    Column("agent_name", String(100), nullable=False),
+    Column("role", PgEnum(AgentMessageRole, name="agent_message_role",values_callable=lambda x: [e.value for e in x]), nullable=False),
+    Column("content", Text, nullable=False),
+    Column("tool_name", String(100), nullable=True),
+    Column("tool_params", JSONB, nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+
+    Index("ix_react_conversations_run_id", "run_id"),
+    Index("ix_react_conversations_instance_id", "instance_id"),
+)
+
+run_events = Table(
+    "run_events",
+    metadata,
+
+    Column("id", String(26), primary_key=True),  # ULID
+    Column("run_id", String(26), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False),
+    Column("sequence", Integer, nullable=False, server_default=text("0")),  # Order within run for SSE resume
+    Column("event_type", String(50), nullable=False),  # thinking, tool_call, observation, answer, error
+    Column("agent_name", String(100), nullable=True),
+    Column("instance_id", String(50), nullable=True),  # Sub-agent invocation ID (prefix + ULID)
+    Column("data", JSONB, nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+
+    Index("ix_run_events_run_id", "run_id"),
+    Index("ix_run_events_sequence", "run_id", "sequence"),
 )
