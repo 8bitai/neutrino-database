@@ -60,6 +60,7 @@ class RouterModeEnum(str, Enum):
     AUTO = "AUTO"
     SEARCH_ONLY = "SEARCH_ONLY"
     ACTION_ONLY = "ACTION_ONLY"
+    DA_ONLY = "DA_ONLY"
 
 
 class RetrievalStrategyEnum(str, Enum):
