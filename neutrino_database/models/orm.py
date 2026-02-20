@@ -1,4 +1,4 @@
-from neutrino_database.models.credentials.api_keys import  llm_providers
+from neutrino_database.models.credentials.api_keys import providers
 from neutrino_database.models.enums import (
     KeyStatusEnum, TenantStatusEnum, UserStatusEnum, IdpProviderEnum,
     MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum,
@@ -258,9 +258,9 @@ class User(Base):
         passive_deletes=True
     )
 
-    created_llm_providers: Mapped[List["LLMProvider"]] = relationship(
-        "LLMProvider",
-        foreign_keys="LLMProvider.created_by",
+    created_providers: Mapped[List["Provider"]] = relationship(
+        "Provider",
+        foreign_keys="Provider.created_by",
         back_populates="creator"
     )
 
@@ -529,8 +529,8 @@ class Workspace(Base):
         passive_deletes=True
     )
 
-    llm_providers: Mapped[List["LLMProvider"]] = relationship(
-        "LLMProvider",
+    providers: Mapped[List["Provider"]] = relationship(
+        "Provider",
         back_populates="workspace",
         cascade="all, delete-orphan"
     )
@@ -750,18 +750,19 @@ class RunEvent(Base):
         back_populates="events"
     )
 
-class LLMProvider(Base):
-    """ORM wrapper for llm_providers table"""
-    __table__ = llm_providers
+class Provider(Base):  # ← Singular, not Providers
+    """ORM wrapper for providers table"""
+    __table__ = providers
 
     id: Mapped[str]
     workspace_id: Mapped[str]
+    provider_category: Mapped[str]  # ← ADD THIS NEW FIELD
     service_type: Mapped[str]
     display_name: Mapped[str]
     encrypted_value: Mapped[str]
     encryption_method: Mapped[str]
-    connection_config: Mapped[dict]
-    model_config: Mapped[dict]
+    connection_config: Mapped[Optional[dict]]  # ← Make Optional
+    model_config: Mapped[Optional[dict]]  # ← Make Optional
     is_active: Mapped[bool]
     is_deleted: Mapped[bool]
     created_at: Mapped[datetime]
@@ -771,11 +772,11 @@ class LLMProvider(Base):
     # Relationships
     workspace: Mapped["Workspace"] = relationship(
         "Workspace",
-        back_populates="llm_providers"
+        back_populates="providers"
     )
 
     creator: Mapped[Optional["User"]] = relationship(
         "User",
-        foreign_keys="LLMProvider.created_by",
-        back_populates="created_llm_providers"
+        foreign_keys="Provider.created_by",  # ← Changed from LLMProvider
+        back_populates="created_providers"  # ← Changed from created_llm_providers
     )
