@@ -9,11 +9,12 @@ from sqlalchemy import Boolean
 from sqlalchemy.sql import func, text
 import uuid
 
-llm_providers = Table(
-    "llm_providers",
+providers = Table(
+    "providers",
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
     Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+    Column("provider_category", String(50), nullable=False),
     Column("service_type", String(50), nullable=False),
     Column("display_name", String(255), nullable=False),
     Column("encrypted_value", Text, nullable=False),

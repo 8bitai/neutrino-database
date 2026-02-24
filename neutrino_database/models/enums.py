@@ -92,3 +92,10 @@ class ServiceType(str, Enum):
     GEMINI = "gemini"
     AZURE_OPENAI = "azure_openai"
     LANDINGAI = "landingai"
+
+
+class ProviderCategory(str, Enum):
+    """Categories of external service providers"""
+    LLM = "llm"
+    DOCUMENT_PARSER = "document_parser"
+    EMBEDDING = "embedding"
