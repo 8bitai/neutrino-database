@@ -1,7 +1,7 @@
 """add_da_only_to_router_mode_enum
 
 Revision ID: 2620a0e773a3
-Revises: 0c58a37d67b7
+Revises: 8c6c62621633
 Create Date: 2026-02-20 12:30:28.644677
 
 """
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = '2620a0e773a3'
-down_revision: Union[str, Sequence[str], None] = '0c58a37d67b7'
+down_revision: Union[str, Sequence[str], None] = '8c6c62621633'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
