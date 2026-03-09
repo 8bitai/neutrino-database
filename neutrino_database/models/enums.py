@@ -99,3 +99,16 @@ class ProviderCategory(str, Enum):
     LLM = "llm"
     DOCUMENT_PARSER = "document_parser"
     EMBEDDING = "embedding"
+
+
+class SpanType(str, Enum):
+    """Types of observability spans recorded in trace_spans."""
+    LLM = "llm"
+    TOOL = "tool"
+    AGENT = "agent"
+
+
+class SpanStatus(str, Enum):
+    """Outcome status of an observability span."""
+    OK = "ok"
+    ERROR = "error"

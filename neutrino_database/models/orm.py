@@ -1,8 +1,19 @@
 from neutrino_database.models.credentials.api_keys import providers
 from neutrino_database.models.enums import (
-    KeyStatusEnum, TenantStatusEnum, UserStatusEnum, IdpProviderEnum,
-    MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum,
-    RouterModeEnum, RetrievalStrategyEnum, AgentMessageRole, RunStatus
+    AgentMessageRole,
+    IdpProviderEnum,
+    KeyStatusEnum,
+    MemberSourceEnum,
+    MessageRoleEnum,
+    RetrievalStrategyEnum,
+    RouterModeEnum,
+    RunStatus,
+    SpanStatus,
+    SpanType,
+    TenantStatusEnum,
+    UserStatusEnum,
+    WorkspaceAccessStatusEnum,
+    WorkspaceStatusEnum,
 )
 from neutrino_database.models import tables
 from neutrino_database.models.base import Base
@@ -706,6 +717,13 @@ class Run(Base):
         cascade="all, delete-orphan"
     )
 
+    trace_spans: Mapped[List["TraceSpan"]] = relationship(
+        "TraceSpan",
+        back_populates="run",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
 
 class ReactConversation(Base):
     """ReAct messages within a run, supports delegation levels."""
@@ -749,6 +767,30 @@ class RunEvent(Base):
         "Run",
         back_populates="events"
     )
+
+class TraceSpan(Base):
+    """Observability span for LLM calls, tool calls, and agent runs."""
+    __table__ = tables.trace_spans
+
+    id: Mapped[str]
+    run_id: Mapped[str]
+    parent_span_id: Mapped[Optional[str]]
+    sequence: Mapped[int]
+    span_type: Mapped[SpanType]
+    name: Mapped[str]
+    agent_name: Mapped[Optional[str]]
+    status: Mapped[SpanStatus]
+    started_at: Mapped[datetime]
+    ended_at: Mapped[datetime]
+    latency_ms: Mapped[int]
+    attributes: Mapped[Optional[dict]]
+    created_at: Mapped[datetime]
+
+    run: Mapped["Run"] = relationship(
+        "Run",
+        back_populates="trace_spans",
+    )
+
 
 class Provider(Base):  # ← Singular, not Providers
     """ORM wrapper for providers table"""
