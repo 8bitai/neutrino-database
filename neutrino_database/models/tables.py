@@ -7,9 +7,24 @@ from sqlalchemy.sql import func, text
 from sqlalchemy import Boolean
 from neutrino_database.models.base import metadata
 
-from neutrino_database.models.enums import ConnectionStatus, KeyStatusEnum, TenantStatusEnum, AllowedModuleEnum, \
-    UserStatusEnum, IdpProviderEnum, MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum, \
-    RouterModeEnum, RetrievalStrategyEnum, RunStatus, AgentMessageRole
+from neutrino_database.models.enums import (
+    AgentMessageRole,
+    AllowedModuleEnum,
+    ConnectionStatus,
+    IdpProviderEnum,
+    KeyStatusEnum,
+    MemberSourceEnum,
+    MessageRoleEnum,
+    RetrievalStrategyEnum,
+    RouterModeEnum,
+    RunStatus,
+    SpanStatus,
+    SpanType,
+    TenantStatusEnum,
+    UserStatusEnum,
+    WorkspaceAccessStatusEnum,
+    WorkspaceStatusEnum,
+)
 
 import uuid
 
@@ -643,4 +658,33 @@ run_events = Table(
 
     Index("ix_run_events_run_id", "run_id"),
     Index("ix_run_events_sequence", "run_id", "sequence"),
+)
+
+
+trace_spans = Table(
+    "trace_spans",
+    metadata,
+
+    Column("id", String(26), primary_key=True),  # ULID
+    Column("run_id", String(26), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False),
+    Column("parent_span_id", String(26), ForeignKey("trace_spans.id", ondelete="CASCADE"), nullable=True),
+    Column("sequence", Integer, nullable=False, server_default=text("0")),
+
+    Column("span_type", PgEnum(SpanType, name="span_type", values_callable=lambda x: [e.value for e in x]), nullable=False),
+    Column("name", String(200), nullable=False),
+    Column("agent_name", String(100), nullable=True),
+    Column("status", PgEnum(SpanStatus, name="span_status", values_callable=lambda x: [e.value for e in x]), nullable=False),
+
+    Column("started_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("ended_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("latency_ms", Integer, nullable=False),
+
+    Column("attributes", JSONB, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+
+    Index("ix_trace_spans_run_id", "run_id"),
+    Index("ix_trace_spans_run_type", "run_id", "span_type"),
+    Index("ix_trace_spans_run_sequence", "run_id", "sequence"),
+    Index("ix_trace_spans_parent", "parent_span_id"),
 )
