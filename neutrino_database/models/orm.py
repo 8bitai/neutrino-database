@@ -1,7 +1,19 @@
+from neutrino_database.models.credentials.api_keys import providers
 from neutrino_database.models.enums import (
-    KeyStatusEnum, TenantStatusEnum, UserStatusEnum, IdpProviderEnum,
-    MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum,
-    RouterModeEnum, RetrievalStrategyEnum, AgentMessageRole, RunStatus
+    AgentMessageRole,
+    IdpProviderEnum,
+    KeyStatusEnum,
+    MemberSourceEnum,
+    MessageRoleEnum,
+    RetrievalStrategyEnum,
+    RouterModeEnum,
+    RunStatus,
+    SpanStatus,
+    SpanType,
+    TenantStatusEnum,
+    UserStatusEnum,
+    WorkspaceAccessStatusEnum,
+    WorkspaceStatusEnum,
 )
 from neutrino_database.models import tables
 from neutrino_database.models.base import Base
@@ -255,6 +267,12 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
         passive_deletes=True
+    )
+
+    created_providers: Mapped[List["Provider"]] = relationship(
+        "Provider",
+        foreign_keys="Provider.created_by",
+        back_populates="creator"
     )
 
 class TenantIdentity(Base):
@@ -522,6 +540,12 @@ class Workspace(Base):
         passive_deletes=True
     )
 
+    providers: Mapped[List["Provider"]] = relationship(
+        "Provider",
+        back_populates="workspace",
+        cascade="all, delete-orphan"
+    )
+
 
 class WorkspaceMember(Base):
     """ORM wrapper for workspace_member table"""
@@ -693,6 +717,13 @@ class Run(Base):
         cascade="all, delete-orphan"
     )
 
+    trace_spans: Mapped[List["TraceSpan"]] = relationship(
+        "TraceSpan",
+        back_populates="run",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
 
 class ReactConversation(Base):
     """ReAct messages within a run, supports delegation levels."""
@@ -735,4 +766,59 @@ class RunEvent(Base):
     run: Mapped["Run"] = relationship(
         "Run",
         back_populates="events"
+    )
+
+class TraceSpan(Base):
+    """Observability span for LLM calls, tool calls, and agent runs."""
+    __table__ = tables.trace_spans
+
+    id: Mapped[str]
+    run_id: Mapped[str]
+    parent_span_id: Mapped[Optional[str]]
+    sequence: Mapped[int]
+    span_type: Mapped[SpanType]
+    name: Mapped[str]
+    agent_name: Mapped[Optional[str]]
+    status: Mapped[SpanStatus]
+    started_at: Mapped[datetime]
+    ended_at: Mapped[datetime]
+    latency_ms: Mapped[int]
+    attributes: Mapped[Optional[dict]]
+    created_at: Mapped[datetime]
+
+    run: Mapped["Run"] = relationship(
+        "Run",
+        back_populates="trace_spans",
+    )
+
+
+class Provider(Base):  # ← Singular, not Providers
+    """ORM wrapper for providers table"""
+    __table__ = providers
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    provider_category: Mapped[str]  # ← ADD THIS NEW FIELD
+    service_type: Mapped[str]
+    display_name: Mapped[str]
+    encrypted_value: Mapped[str]
+    encryption_method: Mapped[str]
+    connection_config: Mapped[Optional[dict]]  # ← Make Optional
+    model_config: Mapped[Optional[dict]]  # ← Make Optional
+    is_active: Mapped[bool]
+    is_deleted: Mapped[bool]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+    created_by: Mapped[Optional[str]]
+
+    # Relationships
+    workspace: Mapped["Workspace"] = relationship(
+        "Workspace",
+        back_populates="providers"
+    )
+
+    creator: Mapped[Optional["User"]] = relationship(
+        "User",
+        foreign_keys="Provider.created_by",  # ← Changed from LLMProvider
+        back_populates="created_providers"  # ← Changed from created_llm_providers
     )

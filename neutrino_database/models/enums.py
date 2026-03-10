@@ -60,6 +60,7 @@ class RouterModeEnum(str, Enum):
     AUTO = "AUTO"
     SEARCH_ONLY = "SEARCH_ONLY"
     ACTION_ONLY = "ACTION_ONLY"
+    DA_ONLY = "DA_ONLY"
 
 
 class RetrievalStrategyEnum(str, Enum):
@@ -82,3 +83,32 @@ class AgentMessageRole(str, Enum):
     USER = "user"
     ASSISTANT = "assistant"
     OBSERVATION = "observation"
+
+
+class ServiceType(str, Enum):
+    """Supported AI service providers"""
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    GEMINI = "gemini"
+    AZURE_OPENAI = "azure_openai"
+    LANDINGAI = "landingai"
+
+
+class ProviderCategory(str, Enum):
+    """Categories of external service providers"""
+    LLM = "llm"
+    DOCUMENT_PARSER = "document_parser"
+    EMBEDDING = "embedding"
+
+
+class SpanType(str, Enum):
+    """Types of observability spans recorded in trace_spans."""
+    LLM = "llm"
+    TOOL = "tool"
+    AGENT = "agent"
+
+
+class SpanStatus(str, Enum):
+    """Outcome status of an observability span."""
+    OK = "ok"
+    ERROR = "error"
