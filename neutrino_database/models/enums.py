@@ -112,3 +112,10 @@ class SpanStatus(str, Enum):
     """Outcome status of an observability span."""
     OK = "ok"
     ERROR = "error"
+
+
+class ExcelDatasetStatus(str, Enum):
+    """Lifecycle status of an uploaded Excel dataset."""
+    READY = "ready"
+    FAILED = "failed"
+    DELETED = "deleted"
