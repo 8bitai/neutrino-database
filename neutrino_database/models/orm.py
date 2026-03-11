@@ -1,6 +1,7 @@
 from neutrino_database.models.credentials.api_keys import providers
 from neutrino_database.models.enums import (
     AgentMessageRole,
+    ExcelDatasetStatus,
     IdpProviderEnum,
     KeyStatusEnum,
     MemberSourceEnum,
@@ -789,6 +790,40 @@ class TraceSpan(Base):
     run: Mapped["Run"] = relationship(
         "Run",
         back_populates="trace_spans",
+    )
+
+
+class ExcelDataset(Base):
+    """Uploaded Excel dataset tracked for text-to-SQL."""
+    __table__ = tables.excel_datasets
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    tenant_id: Mapped[str]
+    uploaded_by: Mapped[Optional[str]]
+    original_filename: Mapped[str]
+    schema_name: Mapped[str]
+    minio_path: Mapped[str]
+    status: Mapped[ExcelDatasetStatus]
+    table_metadata: Mapped[Optional[dict]]
+    file_size_bytes: Mapped[int]
+    error_details: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+    workspace: Mapped["Workspace"] = relationship(
+        "Workspace",
+        foreign_keys="ExcelDataset.workspace_id",
+    )
+
+    tenant: Mapped["Tenant"] = relationship(
+        "Tenant",
+        foreign_keys="ExcelDataset.tenant_id",
+    )
+
+    uploader: Mapped[Optional["User"]] = relationship(
+        "User",
+        foreign_keys="ExcelDataset.uploaded_by",
     )
 
 

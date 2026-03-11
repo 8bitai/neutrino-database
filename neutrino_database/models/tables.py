@@ -11,6 +11,7 @@ from neutrino_database.models.enums import (
     AgentMessageRole,
     AllowedModuleEnum,
     ConnectionStatus,
+    ExcelDatasetStatus,
     IdpProviderEnum,
     KeyStatusEnum,
     MemberSourceEnum,
@@ -687,4 +688,30 @@ trace_spans = Table(
     Index("ix_trace_spans_run_type", "run_id", "span_type"),
     Index("ix_trace_spans_run_sequence", "run_id", "sequence"),
     Index("ix_trace_spans_parent", "parent_span_id"),
+)
+
+
+excel_datasets = Table(
+    "excel_datasets",
+    metadata,
+
+    Column("id", String(26), primary_key=True),  # ULID
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("uploaded_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+
+    Column("original_filename", String(500), nullable=False),
+    Column("schema_name", String(200), nullable=False, unique=True),
+    Column("minio_path", String(1000), nullable=False),
+
+    Column("status", PgEnum(ExcelDatasetStatus, name="excel_dataset_status", values_callable=lambda x: [e.value for e in x]), nullable=False),
+    Column("table_metadata", JSONB, nullable=True),
+    Column("file_size_bytes", BigInteger, nullable=False),
+    Column("error_details", Text, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_excel_datasets_workspace", "workspace_id"),
+    Index("ix_excel_datasets_tenant", "tenant_id"),
 )
