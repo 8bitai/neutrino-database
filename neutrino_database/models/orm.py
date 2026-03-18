@@ -670,6 +670,7 @@ class Run(Base):
     input_message: Mapped[str]
     final_answer: Mapped[Optional[str]]
     sources: Mapped[Optional[dict]]
+    flow_run_id: Mapped[Optional[str]]
     waiting_instance_id: Mapped[Optional[str]]
     input_request: Mapped[Optional[dict]]
     created_at: Mapped[datetime]
