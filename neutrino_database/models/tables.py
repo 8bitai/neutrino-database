@@ -764,12 +764,12 @@ ingested_logs = Table(
     Column("raw_document", JSONB, nullable=False),
     Column("normalized_document", JSONB, nullable=False),
     Column("field_mapping_used", JSONB, nullable=False),
-    Column("es_index", String(255), nullable=False),
-    Column("es_doc_id", String(255), nullable=False),
+    Column("source_index", String(255), nullable=False),
+    Column("source_doc_id", String(255), nullable=False),
     Column("log_timestamp", TIMESTAMP(timezone=True), nullable=False),
     Column("ingested_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
 
-    UniqueConstraint("connector_id", "es_doc_id", name="ux_ingested_logs_connector_doc"),
+    UniqueConstraint("connector_id", "source_doc_id", name="ux_ingested_logs_connector_doc"),
     Index("ix_ingested_logs_connector_ingested", "connector_id", "ingested_at"),
     Index("ix_ingested_logs_connector_timestamp", "connector_id", "log_timestamp"),
 )
