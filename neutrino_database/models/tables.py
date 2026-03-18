@@ -715,3 +715,61 @@ excel_datasets = Table(
     Index("ix_excel_datasets_workspace", "workspace_id"),
     Index("ix_excel_datasets_tenant", "tenant_id"),
 )
+
+
+log_connectors = Table(
+    "log_connectors",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("connector_name", String(255), nullable=False),
+    Column("connector_type", String(50), nullable=False, server_default=text("'elasticsearch'")),
+    Column("config", JSONB, nullable=False),
+    Column("status", String(50), nullable=False, server_default=text("'active'")),
+    Column("last_cursor", JSONB, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_log_connectors_tenant", "tenant_id"),
+    Index("ix_log_connectors_tenant_type", "tenant_id", "connector_type"),
+)
+
+
+log_field_mappings = Table(
+    "log_field_mappings",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("connector_id", UUID(as_uuid=True), ForeignKey("log_connectors.id", ondelete="CASCADE"), nullable=False),
+    Column("mapping_name", String(255), nullable=False),
+    Column("field_mappings", JSONB, nullable=False),
+    Column("is_default", Boolean, nullable=False, server_default=text("false")),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_log_field_mappings_connector", "connector_id"),
+    Index("ix_log_field_mappings_connector_default", "connector_id", "is_default"),
+)
+
+
+ingested_logs = Table(
+    "ingested_logs",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("connector_id", UUID(as_uuid=True), ForeignKey("log_connectors.id", ondelete="CASCADE"), nullable=False),
+    Column("raw_document", JSONB, nullable=False),
+    Column("normalized_document", JSONB, nullable=False),
+    Column("field_mapping_used", JSONB, nullable=False),
+    Column("es_index", String(255), nullable=False),
+    Column("es_doc_id", String(255), nullable=False),
+    Column("log_timestamp", TIMESTAMP(timezone=True), nullable=False),
+    Column("ingested_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+
+    UniqueConstraint("connector_id", "es_doc_id", name="ux_ingested_logs_connector_doc"),
+    Index("ix_ingested_logs_connector_ingested", "connector_id", "ingested_at"),
+    Index("ix_ingested_logs_connector_timestamp", "connector_id", "log_timestamp"),
+)
