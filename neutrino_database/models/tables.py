@@ -608,6 +608,9 @@ runs = Table(
     Column("final_answer", Text, nullable=True),
     Column("sources", JSONB, nullable=True),  # Citation sources from enterprise_search
 
+    # Workflow execution tracking
+    Column("flow_run_id", String(50), nullable=True),  # Activepieces flow run ID for terminate support
+
     # HITL (Human-in-the-Loop) support
     Column("waiting_instance_id", String(50), nullable=True),  # Which agent instance is waiting
     Column("input_request", JSONB, nullable=True),  # {"question": "...", "form_schema": {...}}
