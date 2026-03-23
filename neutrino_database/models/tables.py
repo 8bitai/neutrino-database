@@ -773,3 +773,29 @@ ingested_logs = Table(
     Index("ix_ingested_logs_connector_ingested", "connector_id", "ingested_at"),
     Index("ix_ingested_logs_connector_timestamp", "connector_id", "log_timestamp"),
 )
+
+
+ai_ops_remedies = Table(
+    "ai_ops_remedies",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("incident_id", String(255), nullable=True),
+    Column("team", String(255), nullable=True),
+    Column("priority", String(50), nullable=True),
+    Column("incident_title", String(500), nullable=False),
+    Column("summary", Text, nullable=True),
+    Column("root_cause", Text, nullable=True),
+    Column("email_subject", String(500), nullable=True),
+    Column("status", String(50), nullable=False, server_default=text("'active'")),
+    Column("incident_timestamp", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("remedy", JSONB, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_ai_ops_remedies_tenant", "tenant_id"),
+    Index("ix_ai_ops_remedies_tenant_status", "tenant_id", "status"),
+    Index("ix_ai_ops_remedies_tenant_timestamp", "tenant_id", "incident_timestamp"),
+)
