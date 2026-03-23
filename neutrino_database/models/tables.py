@@ -799,3 +799,22 @@ ai_ops_remedies = Table(
     Index("ix_ai_ops_remedies_tenant_status", "tenant_id", "status"),
     Index("ix_ai_ops_remedies_tenant_timestamp", "tenant_id", "incident_timestamp"),
 )
+
+
+ai_ops_approvals = Table(
+    "ai_ops_approvals",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("remedy_id", UUID(as_uuid=True), ForeignKey("ai_ops_remedies.id", ondelete="CASCADE"), nullable=False),
+    Column("decision", String(50), nullable=False),  # "approved" | "declined"
+    Column("decided_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    UniqueConstraint("remedy_id", name="uq_ai_ops_approvals_remedy"),
+    Index("ix_ai_ops_approvals_tenant", "tenant_id"),
+    Index("ix_ai_ops_approvals_remedy", "remedy_id"),
+)
