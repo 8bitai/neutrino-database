@@ -810,6 +810,8 @@ ai_ops_approvals = Table(
     Column("remedy_id", UUID(as_uuid=True), ForeignKey("ai_ops_remedies.id", ondelete="CASCADE"), nullable=False),
     Column("decision", String(50), nullable=False),  # "approved" | "declined"
     Column("decided_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("channel", String(50), nullable=True),  # "app" | "email"
+    Column("approved_by", String(500), nullable=True),
 
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
@@ -817,4 +819,43 @@ ai_ops_approvals = Table(
     UniqueConstraint("remedy_id", name="uq_ai_ops_approvals_remedy"),
     Index("ix_ai_ops_approvals_tenant", "tenant_id"),
     Index("ix_ai_ops_approvals_remedy", "remedy_id"),
+)
+
+
+ai_ops_sops = Table(
+    "ai_ops_sops",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("name", String(500), nullable=False),
+    Column("content", Text, nullable=True),
+    Column("document_url", String(1000), nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_ai_ops_sops_tenant", "tenant_id"),
+)
+
+
+ai_ops_workflows = Table(
+    "ai_ops_workflows",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("remedy_id", UUID(as_uuid=True), ForeignKey("ai_ops_remedies.id", ondelete="CASCADE"), nullable=False),
+    Column("approval_id", UUID(as_uuid=True), ForeignKey("ai_ops_approvals.id", ondelete="CASCADE"), nullable=False),
+    Column("status", String(50), nullable=False, server_default=text("'approved'")),
+    Column("trigger_text", Text, nullable=True),
+    Column("objective", Text, nullable=True),
+    Column("steps", JSONB, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    UniqueConstraint("remedy_id", name="uq_ai_ops_workflows_remedy"),
+    Index("ix_ai_ops_workflows_tenant", "tenant_id"),
+    Index("ix_ai_ops_workflows_remedy", "remedy_id"),
 )
