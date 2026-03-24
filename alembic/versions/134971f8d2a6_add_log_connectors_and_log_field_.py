@@ -1,7 +1,7 @@
 """add_log_connectors_and_log_field_mappings_tables
 
 Revision ID: 134971f8d2a6
-Revises: b2c3d4e5f6a7
+Revises: c3d4e5f6a7b8
 Create Date: 2026-03-17 14:01:18.724369
 
 """
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = '134971f8d2a6'
-down_revision: Union[str, Sequence[str], None] = 'b2c3d4e5f6a7'
+down_revision: Union[str, Sequence[str], None] = 'c3d4e5f6a7b8'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
