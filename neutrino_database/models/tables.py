@@ -811,10 +811,15 @@ ai_ops_approvals = Table(
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
     Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
     Column("remedy_id", UUID(as_uuid=True), ForeignKey("ai_ops_remedies.id", ondelete="CASCADE"), nullable=False),
-    Column("decision", String(50), nullable=False),  # "approved" | "declined"
+    Column("decision", String(50), nullable=False),  # overall: "pending" | "approved" | "declined"
     Column("decided_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
-    Column("channel", String(50), nullable=True),  # "app" | "email"
+    Column("channel", String(50), nullable=True),  # last channel that acted (kept for compat)
     Column("approved_by", String(500), nullable=True),
+
+    Column("app_decision", String(50), nullable=True),   # "approved" | "declined" | null
+    Column("app_decided_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("email_decision", String(50), nullable=True),  # "approved" | "declined" | null
+    Column("email_decided_at", TIMESTAMP(timezone=True), nullable=True),
 
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
