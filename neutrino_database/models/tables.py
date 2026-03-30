@@ -867,3 +867,22 @@ ai_ops_workflows = Table(
     Index("ix_ai_ops_workflows_tenant", "tenant_id"),
     Index("ix_ai_ops_workflows_remedy", "remedy_id"),
 )
+
+
+ai_ops_workflow_definitions = Table(
+    "ai_ops_workflow_definitions",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("name", String(255), nullable=False),
+    Column("sop_id", UUID(as_uuid=True), ForeignKey("ai_ops_sops.id", ondelete="SET NULL"), nullable=True),
+    Column("trigger_condition", Text, nullable=True),
+    Column("activepieces_flow_name", String(500), nullable=True),
+    Column("status", String(50), nullable=False, server_default=text("'active'")),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_ai_ops_wf_defs_tenant", "tenant_id"),
+)
