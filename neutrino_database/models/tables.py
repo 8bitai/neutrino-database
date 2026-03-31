@@ -812,7 +812,7 @@ ai_ops_approvals = Table(
     Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
     Column("remedy_id", UUID(as_uuid=True), ForeignKey("ai_ops_remedies.id", ondelete="CASCADE"), nullable=False),
     Column("decision", String(50), nullable=False),  # overall: "pending" | "approved" | "declined"
-    Column("decided_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("decided_at", TIMESTAMP(timezone=True), nullable=True),  # set only when decision transitions to approved/declined
     Column("channel", String(50), nullable=True),  # last channel that acted (kept for compat)
     Column("approved_by", String(500), nullable=True),
 
@@ -884,5 +884,6 @@ ai_ops_workflow_definitions = Table(
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
 
+    UniqueConstraint("tenant_id", "name", name="uq_ai_ops_wf_defs_tenant_name"),
     Index("ix_ai_ops_wf_defs_tenant", "tenant_id"),
 )
