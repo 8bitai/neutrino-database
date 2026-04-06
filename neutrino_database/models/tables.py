@@ -250,6 +250,7 @@ connections = Table(
     Column("tenant_id", UUID(as_uuid=True), nullable=False),
     Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
     Column("connector_type_id", String(100), ForeignKey("connector_types.id"), nullable=False),
+    Column("connection_name", String(255), nullable=False, server_default=text("'default'")),
     Column("status", PgEnum(ConnectionStatus), nullable=False, server_default=ConnectionStatus.active.name),
     Column("created_by", String(255)),
     Column("config_schema", Text),  # Workspace-specific configuration (e.g., SharePoint webUrl)
@@ -257,7 +258,15 @@ connections = Table(
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
 
     Index("ix_connection_workspace", "workspace_id"),
-    UniqueConstraint("workspace_id", "connector_type_id", name="ux_connection_workspace_connector_type"),
+    Index(
+        "ux_connection_tenant_workspace_type_name_active",
+        "tenant_id",
+        "workspace_id",
+        "connector_type_id",
+        "connection_name",
+        unique=True,
+        postgresql_where=text("status != 'revoked'"),
+    ),
 )
 
 
@@ -276,7 +285,6 @@ credentials = Table(
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
 )
-
 
 lock_lease = Table(
     "mutex_locks",
