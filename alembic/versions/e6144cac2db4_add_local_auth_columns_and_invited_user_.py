@@ -1,7 +1,7 @@
 """add_local_auth_columns_and_invited_user_status
 
 Revision ID: e6144cac2db4
-Revises: h1i2j3k4l5m6
+Revises: 9d3c7b2a1f44
 Create Date: 2026-04-06 15:55:23.363299
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'e6144cac2db4'
-down_revision: Union[str, Sequence[str], None] = 'h1i2j3k4l5m6'
+down_revision: Union[str, Sequence[str], None] = '9d3c7b2a1f44'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
