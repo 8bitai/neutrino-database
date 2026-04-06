@@ -5,6 +5,7 @@ from alembic import context
 # Import your metadata and tables
 from neutrino_database.models.base import metadata
 from neutrino_database.models import tables
+from neutrino_database.models.credentials import api_keys  # noqa: F401 – register providers table with metadata
 from neutrino_database.config import settings
 
 config = context.config

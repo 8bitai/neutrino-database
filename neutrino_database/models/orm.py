@@ -177,6 +177,10 @@ class User(Base):
     updated_at: Mapped[datetime]
     deleted_at: Mapped[Optional[datetime]]
     default_workspace_id: Mapped[Optional[str]]
+    username: Mapped[Optional[str]]
+    password_hash: Mapped[Optional[str]]
+    must_change_password: Mapped[bool]
+    password_changed_at: Mapped[Optional[datetime]]
 
     # Relationships
     tenant: Mapped["Tenant"] = relationship(
