@@ -366,12 +366,19 @@ user = Table(
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
-
     Column("default_workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="SET NULL"), nullable=True),
 
+    # Local auth columns — nullable so SSO-only users are unaffected
+    Column("username", String(100), nullable=True),
+    Column("password_hash", Text, nullable=True),
+    Column("must_change_password", Boolean, nullable=False, server_default="false"),
+    Column("password_changed_at", TIMESTAMP(timezone=True), nullable=True),
+
     UniqueConstraint("tenant_id", "email", name="ux_user_tenant_email"),
+    UniqueConstraint("tenant_id", "username", name="ux_user_tenant_username"),  # NULLs excluded from uniqueness — multiple SSO-only users per tenant are valid
     Index("ix_user_tenant_status", "tenant_id", "status"),
     Index("ix_user_last_login_at", "last_login_at"),
+    Index("ix_user_tenant_username_lower", "tenant_id", func.lower(Column("username", String(100))), unique=True, postgresql_where=text("username IS NOT NULL")),
 )
 
 tenant_identity = Table(
