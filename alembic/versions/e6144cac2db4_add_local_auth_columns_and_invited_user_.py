@@ -18,7 +18,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Add local-auth columns, unique constraint, and case-insensitive index to user table."""
+    """Add local-auth columns, INVITED user status, unique constraint, and case-insensitive index."""
+    op.execute("ALTER TYPE user_status ADD VALUE IF NOT EXISTS 'INVITED'")
+
     op.add_column('user', sa.Column('username', sa.String(100), nullable=True))
     op.add_column('user', sa.Column('password_hash', sa.Text(), nullable=True))
     op.add_column('user', sa.Column('must_change_password', sa.Boolean(), nullable=False, server_default=sa.text('false')))
