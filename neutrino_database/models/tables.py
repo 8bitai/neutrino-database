@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Table, Column, Integer, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
-    UniqueConstraint
+    UniqueConstraint, Numeric
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY
 from sqlalchemy.sql import func, text
@@ -250,6 +250,7 @@ connections = Table(
     Column("tenant_id", UUID(as_uuid=True), nullable=False),
     Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
     Column("connector_type_id", String(100), ForeignKey("connector_types.id"), nullable=False),
+    Column("connection_name", String(255), nullable=False, server_default=text("'default'")),
     Column("status", PgEnum(ConnectionStatus), nullable=False, server_default=ConnectionStatus.active.name),
     Column("created_by", String(255)),
     Column("config_schema", Text),  # Workspace-specific configuration (e.g., SharePoint webUrl)
@@ -257,7 +258,15 @@ connections = Table(
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
 
     Index("ix_connection_workspace", "workspace_id"),
-    UniqueConstraint("workspace_id", "connector_type_id", name="ux_connection_workspace_connector_type"),
+    Index(
+        "ux_connection_tenant_workspace_type_name_active",
+        "tenant_id",
+        "workspace_id",
+        "connector_type_id",
+        "connection_name",
+        unique=True,
+        postgresql_where=text("status != 'revoked'"),
+    ),
 )
 
 
@@ -276,7 +285,6 @@ credentials = Table(
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
 )
-
 
 lock_lease = Table(
     "mutex_locks",
@@ -897,4 +905,105 @@ ai_ops_workflow_definitions = Table(
 
     UniqueConstraint("tenant_id", "name", name="uq_ai_ops_wf_defs_tenant_name"),
     Index("ix_ai_ops_wf_defs_tenant", "tenant_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# Underwriting tables
+# Managed by neutrino-database Alembic; used by connector-service AP flows.
+# ---------------------------------------------------------------------------
+
+underwriting_sessions = Table(
+    "underwriting_sessions",
+    metadata,
+
+    Column("session_id", Text, primary_key=True),
+    Column("application_id", Text, nullable=False),
+    Column("applicant_name", Text, nullable=True),
+    Column("email", Text, nullable=True),
+    Column("address", Text, nullable=True),
+    Column("loan_product", Text, nullable=True),
+    Column("loan_amount", Numeric, nullable=True),
+    Column("loan_tenure_months", Integer, nullable=True),
+    Column("monthly_income", Numeric, nullable=True),
+    Column("employer_name", Text, nullable=True),
+    Column("loan_purpose", Text, nullable=True),
+    Column("dti_threshold", Numeric, nullable=True, server_default=text("50")),
+    Column("status", Text, nullable=True),
+    Column("tenant_id", Text, nullable=True),
+    Column("chat_started_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
+)
+
+
+underwriting_conversation_history = Table(
+    "underwriting_conversation_history",
+    metadata,
+
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("session_id", Text, ForeignKey("underwriting_sessions.session_id", ondelete="CASCADE"), nullable=False),
+    Column("turn_index", Integer, nullable=False),
+    Column("role", Text, nullable=False),
+    Column("message", Text, nullable=True),
+    Column("message_type", Text, nullable=True),
+    Column("conversation_state", Text, nullable=True),
+    Column("metadata", JSONB, nullable=True),
+
+    UniqueConstraint("session_id", "turn_index", name="uq_conversation_history_session_turn"),
+    Index("ix_conversation_history_session", "session_id"),
+)
+
+
+underwriting_session_documents = Table(
+    "underwriting_session_documents",
+    metadata,
+
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("session_id", Text, ForeignKey("underwriting_sessions.session_id", ondelete="CASCADE"), nullable=False),
+    Column("doc_type", Text, nullable=False),
+    Column("minio_key", Text, nullable=True),
+    Column("minio_url", Text, nullable=True),
+    Column("extracted_text", Text, nullable=True),
+    Column("validation_status", Text, nullable=True),
+    Column("uploaded_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
+    Column("validated_at", TIMESTAMP(timezone=True), nullable=True),
+
+    UniqueConstraint("session_id", "doc_type", name="uq_session_documents_session_doctype"),
+    Index("ix_session_documents_session", "session_id"),
+)
+
+
+underwriting_pipeline_results = Table(
+    "underwriting_pipeline_results",
+    metadata,
+
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("session_id", Text, ForeignKey("underwriting_sessions.session_id", ondelete="CASCADE"), nullable=False),
+    Column("flow_name", Text, nullable=False),
+    Column("status", Text, nullable=True),
+    Column("result_json", JSONB, nullable=True),
+    Column("error_message", Text, nullable=True),
+    Column("started_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
+    Column("completed_at", TIMESTAMP(timezone=True), nullable=True),
+
+    UniqueConstraint("session_id", "flow_name", name="uq_pipeline_results_session_flow"),
+    Index("ix_pipeline_results_session", "session_id"),
+)
+
+
+underwriting_rules = Table(
+    "underwriting_rules",
+    metadata,
+
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("name", Text, nullable=False),
+    Column("description", Text, nullable=True),
+    Column("category", Text, nullable=True),
+    Column("severity", Text, nullable=True, server_default=text("'medium'")),
+    Column("condition", Text, nullable=True),
+    Column("threshold", Text, nullable=True),
+    Column("enabled", Boolean, nullable=True, server_default=text("true")),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
 )
