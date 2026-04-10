@@ -1,8 +1,8 @@
 """add auth performance indexes
 
 Revision ID: a7b8c9d0e1f2
-Revises: e6144cac2db4
-Create Date: 2026-04-08 10:00:00.000000
+Revises: 0e2ffac974b4
+Create Date: 2026-04-10 10:00:00.000000
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'a7b8c9d0e1f2'
-down_revision: Union[str, Sequence[str], None] = 'e6144cac2db4'
+down_revision: Union[str, Sequence[str], None] = '0e2ffac974b4'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
