@@ -379,6 +379,8 @@ user = Table(
     Index("ix_user_tenant_status", "tenant_id", "status"),
     Index("ix_user_last_login_at", "last_login_at"),
     Index("ix_user_tenant_username_lower", "tenant_id", func.lower(Column("username", String(100))), unique=True, postgresql_where=text("username IS NOT NULL")),
+    Index("ix_user_email_lower_active", func.lower(Column("email", String(320))), postgresql_where=text("deleted_at IS NULL")),
+    Index("ix_user_username_lower_active", func.lower(Column("username", String(100))), postgresql_where=text("deleted_at IS NULL AND username IS NOT NULL")),
 )
 
 tenant_identity = Table(
@@ -473,6 +475,7 @@ user_invitation = Table(
 
     Index("ix_user_invitation_tenant_email", "tenant_id", "email"),
     Index("ix_user_invitation_expires_at", "expires_at"),
+    Index("ix_user_invitation_tenant_email_pending", "tenant_id", "email", postgresql_where=text("accepted_at IS NULL AND deleted_at IS NULL")),
 )
 
 chat = Table(
@@ -585,6 +588,7 @@ workspace_invitation = Table(
     Index("ix_workspace_invitation_workspace_email", "workspace_id", "email"),
     Index("ix_workspace_invitation_email", "email"),
     Index("ix_workspace_invitation_expires_at", "expires_at"),
+    Index("ix_workspace_invitation_email_pending", "email", postgresql_where=text("accepted_at IS NULL AND deleted_at IS NULL")),
 )
 
 orchestrator_config = Table(
