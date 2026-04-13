@@ -1,7 +1,7 @@
 """Add governance defaults to LLM provider model_config.
 
 Revision ID: j7k8l9m0n1p2
-Revises: h1i2j3k4l5m6
+Revises: a7b8c9d0e1f2
 Create Date: 2026-04-13 12:00:00.000000
 """
 
@@ -13,7 +13,7 @@ from alembic import op
 
 
 revision: str = "j7k8l9m0n1p2"
-down_revision: Union[str, Sequence[str], None] = "h1i2j3k4l5m6"
+down_revision: Union[str, Sequence[str], None] = "a7b8c9d0e1f2"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
