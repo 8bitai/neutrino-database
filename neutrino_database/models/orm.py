@@ -841,8 +841,9 @@ class Provider(Base):  # ← Singular, not Providers
     provider_category: Mapped[str]  # ← ADD THIS NEW FIELD
     service_type: Mapped[str]
     display_name: Mapped[str]
-    encrypted_value: Mapped[str]
+    encrypted_value: Mapped[Optional[str]]
     encryption_method: Mapped[str]
+    vault_path: Mapped[Optional[str]]
     connection_config: Mapped[Optional[dict]]  # ← Make Optional
     model_config: Mapped[Optional[dict]]  # ← Make Optional
     is_active: Mapped[bool]

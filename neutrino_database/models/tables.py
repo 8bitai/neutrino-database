@@ -281,6 +281,7 @@ credentials = Table(
     Column("access_token_expires_at", TIMESTAMP(timezone=True)),
     Column("refresh_token_encrypted", Text),
     Column("scopes_or_resource", Text),
+    Column("vault_path", Text, nullable=True),
     Column("metadata", Text),  # Column name is "metadata" in DB
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
