@@ -2,9 +2,9 @@
 Setup OpenBao ACL policies for per-service scoped access.
 
 Creates three policies and corresponding service tokens:
-  - neutrino-gateway-policy: read/write on secret/data/workspaces/*/llm/*
-  - agent-platform-policy:   read-only on secret/data/workspaces/*/llm/*
-  - connector-service-policy: read/write on secret/data/workspaces/*/connectors/* and */logs/*
+  - neutrino-gateway-policy: read/write on secret/data/tenants/*/workspaces/*/llm/*
+  - agent-platform-policy:   read-only on secret/data/tenants/*/workspaces/*/llm/*
+  - connector-service-policy: read/write on secret/data/tenants/*/workspaces/*/connectors/* and tenants/*/logs/*
 
 Usage:
     export OPENBAO_ADDR=https://openbao-dev.8bit.ai
@@ -24,37 +24,37 @@ OPENBAO_TOKEN = os.environ["OPENBAO_TOKEN"]
 
 POLICIES = {
     "neutrino-gateway-policy": '''
-path "secret/data/workspaces/*/llm/*" {
+path "secret/data/tenants/*/workspaces/*/llm/*" {
   capabilities = ["create", "update", "read", "delete"]
 }
 
-path "secret/metadata/workspaces/*/llm/*" {
+path "secret/metadata/tenants/*/workspaces/*/llm/*" {
   capabilities = ["list", "read", "delete"]
 }
 ''',
     "agent-platform-policy": '''
-path "secret/data/workspaces/*/llm/*" {
+path "secret/data/tenants/*/workspaces/*/llm/*" {
   capabilities = ["read"]
 }
 
-path "secret/metadata/workspaces/*/llm/*" {
+path "secret/metadata/tenants/*/workspaces/*/llm/*" {
   capabilities = ["list", "read"]
 }
 ''',
     "connector-service-policy": '''
-path "secret/data/workspaces/*/connectors/*" {
+path "secret/data/tenants/*/workspaces/*/connectors/*" {
   capabilities = ["create", "update", "read", "delete"]
 }
 
-path "secret/metadata/workspaces/*/connectors/*" {
+path "secret/metadata/tenants/*/workspaces/*/connectors/*" {
   capabilities = ["list", "read", "delete"]
 }
 
-path "secret/data/workspaces/*/logs/*" {
+path "secret/data/tenants/*/logs/*" {
   capabilities = ["create", "update", "read", "delete"]
 }
 
-path "secret/metadata/workspaces/*/logs/*" {
+path "secret/metadata/tenants/*/logs/*" {
   capabilities = ["list", "read", "delete"]
 }
 ''',

@@ -91,15 +91,17 @@ async def migrate_providers(session: AsyncSession, vault: httpx.AsyncClient) -> 
     """Migrate providers.encrypted_value -> OpenBao."""
     result = await session.execute(
         text(
-            "SELECT id, workspace_id, encrypted_value "
-            "FROM providers "
-            "WHERE vault_path IS NULL AND encrypted_value IS NOT NULL AND is_deleted = false"
+            "SELECT p.id, p.workspace_id, p.encrypted_value, w.tenant_id "
+            "FROM providers p "
+            "JOIN workspace w ON w.id = p.workspace_id "
+            "WHERE p.vault_path IS NULL AND p.encrypted_value IS NOT NULL AND p.is_deleted = false"
         )
     )
     rows = result.mappings().all()
     count = 0
     for row in rows:
         pid = str(row["id"])
+        tid = str(row["tenant_id"])
         wid = str(row["workspace_id"])
         try:
             api_key = _aes_gcm_decrypt(row["encrypted_value"])
@@ -107,7 +109,7 @@ async def migrate_providers(session: AsyncSession, vault: httpx.AsyncClient) -> 
             print(f"  SKIP provider {pid}: decrypt failed: {exc}")
             continue
 
-        vp = f"workspaces/{wid}/llm/{pid}"
+        vp = f"tenants/{tid}/workspaces/{wid}/llm/{pid}"
         await _kv_put(vault, vp, {"api_key": api_key})
 
         await session.execute(
@@ -130,7 +132,7 @@ async def migrate_credentials(session: AsyncSession, vault: httpx.AsyncClient) -
     result = await session.execute(
         text(
             "SELECT cr.id, cr.connection_id, cr.access_token_encrypted, cr.resource, "
-            "       co.workspace_id, co.connection_name "
+            "       co.tenant_id, co.workspace_id, co.connection_name "
             "FROM credentials cr "
             "JOIN connections co ON co.id = cr.connection_id "
             "WHERE cr.vault_path IS NULL "
@@ -142,6 +144,7 @@ async def migrate_credentials(session: AsyncSession, vault: httpx.AsyncClient) -
     count = 0
     for row in rows:
         cid = str(row["id"])
+        tid = str(row["tenant_id"])
         wid = str(row["workspace_id"])
         cname = str(row["connection_name"])
         try:
@@ -151,7 +154,7 @@ async def migrate_credentials(session: AsyncSession, vault: httpx.AsyncClient) -
             print(f"  SKIP credential {cid}: decrypt failed: {exc}")
             continue
 
-        vp = f"workspaces/{wid}/connectors/{cname}/credentials"
+        vp = f"tenants/{tid}/workspaces/{wid}/connectors/{cname}/credentials"
         await _kv_put(vault, vp, creds)
 
         await session.execute(
@@ -202,7 +205,7 @@ async def migrate_log_connectors(session: AsyncSession, vault: httpx.AsyncClient
         if not secrets:
             continue
 
-        vp = f"workspaces/{tid}/logs/{lcid}"
+        vp = f"tenants/{tid}/logs/{lcid}"
         await _kv_put(vault, vp, secrets)
 
         new_cfg = dict(cfg)
