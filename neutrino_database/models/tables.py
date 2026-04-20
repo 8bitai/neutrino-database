@@ -1,15 +1,31 @@
 from sqlalchemy import (
     Table, Column, Integer, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
-    UniqueConstraint
+    UniqueConstraint, Numeric
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY
 from sqlalchemy.sql import func, text
 from sqlalchemy import Boolean
 from neutrino_database.models.base import metadata
 
-from neutrino_database.models.enums import ConnectionStatus, KeyStatusEnum, TenantStatusEnum, AllowedModuleEnum, \
-    UserStatusEnum, IdpProviderEnum, MemberSourceEnum, MessageRoleEnum, WorkspaceStatusEnum, WorkspaceAccessStatusEnum, \
-    RouterModeEnum, RetrievalStrategyEnum, RunStatus, AgentMessageRole
+from neutrino_database.models.enums import (
+    AgentMessageRole,
+    AllowedModuleEnum,
+    ConnectionStatus,
+    ExcelDatasetStatus,
+    IdpProviderEnum,
+    KeyStatusEnum,
+    MemberSourceEnum,
+    MessageRoleEnum,
+    RetrievalStrategyEnum,
+    RouterModeEnum,
+    RunStatus,
+    SpanStatus,
+    SpanType,
+    TenantStatusEnum,
+    UserStatusEnum,
+    WorkspaceAccessStatusEnum,
+    WorkspaceStatusEnum,
+)
 
 import uuid
 
@@ -234,6 +250,7 @@ connections = Table(
     Column("tenant_id", UUID(as_uuid=True), nullable=False),
     Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
     Column("connector_type_id", String(100), ForeignKey("connector_types.id"), nullable=False),
+    Column("connection_name", String(255), nullable=False, server_default=text("'default'")),
     Column("status", PgEnum(ConnectionStatus), nullable=False, server_default=ConnectionStatus.active.name),
     Column("created_by", String(255)),
     Column("config_schema", Text),  # Workspace-specific configuration (e.g., SharePoint webUrl)
@@ -241,7 +258,15 @@ connections = Table(
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
 
     Index("ix_connection_workspace", "workspace_id"),
-    UniqueConstraint("workspace_id", "connector_type_id", name="ux_connection_workspace_connector_type"),
+    Index(
+        "ux_connection_tenant_workspace_type_name_active",
+        "tenant_id",
+        "workspace_id",
+        "connector_type_id",
+        "connection_name",
+        unique=True,
+        postgresql_where=text("status != 'revoked'"),
+    ),
 )
 
 
@@ -260,7 +285,6 @@ credentials = Table(
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
 )
-
 
 lock_lease = Table(
     "mutex_locks",
@@ -342,12 +366,21 @@ user = Table(
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
-
     Column("default_workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="SET NULL"), nullable=True),
 
+    # Local auth columns — nullable so SSO-only users are unaffected
+    Column("username", String(100), nullable=True),
+    Column("password_hash", Text, nullable=True),
+    Column("must_change_password", Boolean, nullable=False, server_default="false"),
+    Column("password_changed_at", TIMESTAMP(timezone=True), nullable=True),
+
     UniqueConstraint("tenant_id", "email", name="ux_user_tenant_email"),
+    UniqueConstraint("tenant_id", "username", name="ux_user_tenant_username"),  # NULLs excluded from uniqueness — multiple SSO-only users per tenant are valid
     Index("ix_user_tenant_status", "tenant_id", "status"),
     Index("ix_user_last_login_at", "last_login_at"),
+    Index("ix_user_tenant_username_lower", "tenant_id", func.lower(Column("username", String(100))), unique=True, postgresql_where=text("username IS NOT NULL")),
+    Index("ix_user_email_lower_active", func.lower(Column("email", String(320))), postgresql_where=text("deleted_at IS NULL")),
+    Index("ix_user_username_lower_active", func.lower(Column("username", String(100))), postgresql_where=text("deleted_at IS NULL AND username IS NOT NULL")),
 )
 
 tenant_identity = Table(
@@ -442,6 +475,7 @@ user_invitation = Table(
 
     Index("ix_user_invitation_tenant_email", "tenant_id", "email"),
     Index("ix_user_invitation_expires_at", "expires_at"),
+    Index("ix_user_invitation_tenant_email_pending", "tenant_id", "email", postgresql_where=text("accepted_at IS NULL AND deleted_at IS NULL")),
 )
 
 chat = Table(
@@ -554,6 +588,7 @@ workspace_invitation = Table(
     Index("ix_workspace_invitation_workspace_email", "workspace_id", "email"),
     Index("ix_workspace_invitation_email", "email"),
     Index("ix_workspace_invitation_expires_at", "expires_at"),
+    Index("ix_workspace_invitation_email_pending", "email", postgresql_where=text("accepted_at IS NULL AND deleted_at IS NULL")),
 )
 
 orchestrator_config = Table(
@@ -591,6 +626,9 @@ runs = Table(
     Column("input_message", Text, nullable=False),
     Column("final_answer", Text, nullable=True),
     Column("sources", JSONB, nullable=True),  # Citation sources from enterprise_search
+
+    # Workflow execution tracking
+    Column("flow_run_id", String(50), nullable=True),  # Activepieces flow run ID for terminate support
 
     # HITL (Human-in-the-Loop) support
     Column("waiting_instance_id", String(50), nullable=True),  # Which agent instance is waiting
@@ -643,4 +681,329 @@ run_events = Table(
 
     Index("ix_run_events_run_id", "run_id"),
     Index("ix_run_events_sequence", "run_id", "sequence"),
+)
+
+
+trace_spans = Table(
+    "trace_spans",
+    metadata,
+
+    Column("id", String(26), primary_key=True),  # ULID
+    Column("run_id", String(26), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False),
+    Column("parent_span_id", String(26), ForeignKey("trace_spans.id", ondelete="CASCADE"), nullable=True),
+    Column("sequence", Integer, nullable=False, server_default=text("0")),
+
+    Column("span_type", PgEnum(SpanType, name="span_type", values_callable=lambda x: [e.value for e in x]), nullable=False),
+    Column("name", String(200), nullable=False),
+    Column("agent_name", String(100), nullable=True),
+    Column("status", PgEnum(SpanStatus, name="span_status", values_callable=lambda x: [e.value for e in x]), nullable=False),
+
+    Column("started_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("ended_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("latency_ms", Integer, nullable=False),
+
+    Column("attributes", JSONB, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+
+    Index("ix_trace_spans_run_id", "run_id"),
+    Index("ix_trace_spans_run_type", "run_id", "span_type"),
+    Index("ix_trace_spans_run_sequence", "run_id", "sequence"),
+    Index("ix_trace_spans_parent", "parent_span_id"),
+)
+
+
+excel_datasets = Table(
+    "excel_datasets",
+    metadata,
+
+    Column("id", String(26), primary_key=True),  # ULID
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("uploaded_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+
+    Column("original_filename", String(500), nullable=False),
+    Column("schema_name", String(200), nullable=False, unique=True),
+    Column("minio_path", String(1000), nullable=False),
+
+    Column("status", PgEnum(ExcelDatasetStatus, name="excel_dataset_status", values_callable=lambda x: [e.value for e in x]), nullable=False),
+    Column("table_metadata", JSONB, nullable=True),
+    Column("file_size_bytes", BigInteger, nullable=False),
+    Column("error_details", Text, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_excel_datasets_workspace", "workspace_id"),
+    Index("ix_excel_datasets_tenant", "tenant_id"),
+)
+
+
+log_connectors = Table(
+    "log_connectors",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("connector_name", String(255), nullable=False),
+    Column("connector_type", String(50), nullable=False, server_default=text("'elasticsearch'")),
+    Column("config", JSONB, nullable=False),
+    Column("status", String(50), nullable=False, server_default=text("'active'")),
+    Column("last_cursor", JSONB, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_log_connectors_tenant", "tenant_id"),
+    Index("ix_log_connectors_tenant_type", "tenant_id", "connector_type"),
+)
+
+
+log_field_mappings = Table(
+    "log_field_mappings",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("connector_id", UUID(as_uuid=True), ForeignKey("log_connectors.id", ondelete="CASCADE"), nullable=False),
+    Column("mapping_name", String(255), nullable=False),
+    Column("field_mappings", JSONB, nullable=False),
+    Column("is_default", Boolean, nullable=False, server_default=text("false")),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_log_field_mappings_connector", "connector_id"),
+    Index("ix_log_field_mappings_connector_default", "connector_id", "is_default"),
+)
+
+
+ingested_logs = Table(
+    "ingested_logs",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("connector_id", UUID(as_uuid=True), ForeignKey("log_connectors.id", ondelete="CASCADE"), nullable=False),
+    Column("raw_document", JSONB, nullable=False),
+    Column("normalized_document", JSONB, nullable=False),
+    Column("field_mapping_used", JSONB, nullable=False),
+    Column("source_index", String(255), nullable=False),
+    Column("source_doc_id", String(255), nullable=False),
+    Column("log_timestamp", TIMESTAMP(timezone=True), nullable=False),
+    Column("ingested_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+
+    UniqueConstraint("connector_id", "source_doc_id", name="ux_ingested_logs_connector_doc"),
+    Index("ix_ingested_logs_connector_ingested", "connector_id", "ingested_at"),
+    Index("ix_ingested_logs_connector_timestamp", "connector_id", "log_timestamp"),
+)
+
+
+ai_ops_remedies = Table(
+    "ai_ops_remedies",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("incident_id", String(255), nullable=True),
+    Column("team", String(255), nullable=True),
+    Column("priority", String(50), nullable=True),
+    Column("incident_title", String(500), nullable=False),
+    Column("summary", Text, nullable=True),
+    Column("root_cause", Text, nullable=True),
+    Column("email_subject", String(500), nullable=True),
+    Column("status", String(50), nullable=False, server_default=text("'active'")),
+    Column("incident_timestamp", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("remedy", JSONB, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_ai_ops_remedies_tenant", "tenant_id"),
+    Index("ix_ai_ops_remedies_tenant_status", "tenant_id", "status"),
+    Index("ix_ai_ops_remedies_tenant_timestamp", "tenant_id", "incident_timestamp"),
+)
+
+
+ai_ops_approvals = Table(
+    "ai_ops_approvals",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("remedy_id", UUID(as_uuid=True), ForeignKey("ai_ops_remedies.id", ondelete="CASCADE"), nullable=False),
+    Column("decision", String(50), nullable=False),  # overall: "pending" | "approved" | "declined"
+    Column("decided_at", TIMESTAMP(timezone=True), nullable=True),  # set only when decision transitions to approved/declined
+    Column("channel", String(50), nullable=True),  # last channel that acted (kept for compat)
+    Column("approved_by", String(500), nullable=True),
+
+    Column("app_decision", String(50), nullable=True),   # "approved" | "declined" | null
+    Column("app_decided_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("email_decision", String(50), nullable=True),  # "approved" | "declined" | null
+    Column("email_decided_at", TIMESTAMP(timezone=True), nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    UniqueConstraint("remedy_id", name="uq_ai_ops_approvals_remedy"),
+    Index("ix_ai_ops_approvals_tenant", "tenant_id"),
+    Index("ix_ai_ops_approvals_remedy", "remedy_id"),
+)
+
+
+ai_ops_sops = Table(
+    "ai_ops_sops",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("name", String(500), nullable=False),
+    Column("content", Text, nullable=True),
+    Column("document_url", String(1000), nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    Index("ix_ai_ops_sops_tenant", "tenant_id"),
+)
+
+
+ai_ops_workflows = Table(
+    "ai_ops_workflows",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("remedy_id", UUID(as_uuid=True), ForeignKey("ai_ops_remedies.id", ondelete="CASCADE"), nullable=False),
+    Column("approval_id", UUID(as_uuid=True), ForeignKey("ai_ops_approvals.id", ondelete="CASCADE"), nullable=False),
+    Column("status", String(50), nullable=False, server_default=text("'approved'")),
+    Column("trigger_text", Text, nullable=True),
+    Column("objective", Text, nullable=True),
+    Column("steps", JSONB, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    UniqueConstraint("remedy_id", name="uq_ai_ops_workflows_remedy"),
+    Index("ix_ai_ops_workflows_tenant", "tenant_id"),
+    Index("ix_ai_ops_workflows_remedy", "remedy_id"),
+)
+
+
+ai_ops_workflow_definitions = Table(
+    "ai_ops_workflow_definitions",
+    metadata,
+
+    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("name", String(255), nullable=False),
+    Column("sop_id", UUID(as_uuid=True), ForeignKey("ai_ops_sops.id", ondelete="SET NULL"), nullable=True),
+    Column("trigger_condition", Text, nullable=True),
+    Column("activepieces_flow_name", String(500), nullable=True),
+    Column("status", String(50), nullable=False, server_default=text("'active'")),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    UniqueConstraint("tenant_id", "name", name="uq_ai_ops_wf_defs_tenant_name"),
+    Index("ix_ai_ops_wf_defs_tenant", "tenant_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# Underwriting tables
+# Managed by neutrino-database Alembic; used by connector-service AP flows.
+# ---------------------------------------------------------------------------
+
+underwriting_sessions = Table(
+    "underwriting_sessions",
+    metadata,
+
+    Column("session_id", Text, primary_key=True),
+    Column("application_id", Text, nullable=False),
+    Column("applicant_name", Text, nullable=True),
+    Column("email", Text, nullable=True),
+    Column("address", Text, nullable=True),
+    Column("loan_product", Text, nullable=True),
+    Column("loan_amount", Numeric, nullable=True),
+    Column("loan_tenure_months", Integer, nullable=True),
+    Column("monthly_income", Numeric, nullable=True),
+    Column("employer_name", Text, nullable=True),
+    Column("loan_purpose", Text, nullable=True),
+    Column("dti_threshold", Numeric, nullable=True, server_default=text("50")),
+    Column("status", Text, nullable=True),
+    Column("tenant_id", Text, nullable=True),
+    Column("chat_started_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
+)
+
+
+underwriting_conversation_history = Table(
+    "underwriting_conversation_history",
+    metadata,
+
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("session_id", Text, ForeignKey("underwriting_sessions.session_id", ondelete="CASCADE"), nullable=False),
+    Column("turn_index", Integer, nullable=False),
+    Column("role", Text, nullable=False),
+    Column("message", Text, nullable=True),
+    Column("message_type", Text, nullable=True),
+    Column("conversation_state", Text, nullable=True),
+    Column("metadata", JSONB, nullable=True),
+
+    UniqueConstraint("session_id", "turn_index", name="uq_conversation_history_session_turn"),
+    Index("ix_conversation_history_session", "session_id"),
+)
+
+
+underwriting_session_documents = Table(
+    "underwriting_session_documents",
+    metadata,
+
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("session_id", Text, ForeignKey("underwriting_sessions.session_id", ondelete="CASCADE"), nullable=False),
+    Column("doc_type", Text, nullable=False),
+    Column("minio_key", Text, nullable=True),
+    Column("minio_url", Text, nullable=True),
+    Column("extracted_text", Text, nullable=True),
+    Column("validation_status", Text, nullable=True),
+    Column("uploaded_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
+    Column("validated_at", TIMESTAMP(timezone=True), nullable=True),
+
+    UniqueConstraint("session_id", "doc_type", name="uq_session_documents_session_doctype"),
+    Index("ix_session_documents_session", "session_id"),
+)
+
+
+underwriting_pipeline_results = Table(
+    "underwriting_pipeline_results",
+    metadata,
+
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("session_id", Text, ForeignKey("underwriting_sessions.session_id", ondelete="CASCADE"), nullable=False),
+    Column("flow_name", Text, nullable=False),
+    Column("status", Text, nullable=True),
+    Column("result_json", JSONB, nullable=True),
+    Column("error_message", Text, nullable=True),
+    Column("started_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
+    Column("completed_at", TIMESTAMP(timezone=True), nullable=True),
+
+    UniqueConstraint("session_id", "flow_name", name="uq_pipeline_results_session_flow"),
+    Index("ix_pipeline_results_session", "session_id"),
+)
+
+
+underwriting_rules = Table(
+    "underwriting_rules",
+    metadata,
+
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("name", Text, nullable=False),
+    Column("description", Text, nullable=True),
+    Column("category", Text, nullable=True),
+    Column("severity", Text, nullable=True, server_default=text("'medium'")),
+    Column("condition", Text, nullable=True),
+    Column("threshold", Text, nullable=True),
+    Column("enabled", Boolean, nullable=True, server_default=text("true")),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
 )
