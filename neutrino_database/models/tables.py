@@ -794,6 +794,7 @@ ai_ops_remedies = Table(
     Column("status", String(50), nullable=False, server_default=text("'active'")),
     Column("incident_timestamp", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("remedy", JSONB, nullable=True),
+    Column("correlation_key", String(255), nullable=True),
 
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
@@ -801,6 +802,13 @@ ai_ops_remedies = Table(
     Index("ix_ai_ops_remedies_tenant", "tenant_id"),
     Index("ix_ai_ops_remedies_tenant_status", "tenant_id", "status"),
     Index("ix_ai_ops_remedies_tenant_timestamp", "tenant_id", "incident_timestamp"),
+    Index(
+        "ux_ai_ops_remedies_tenant_corr_key",
+        "tenant_id",
+        "correlation_key",
+        unique=True,
+        postgresql_where=text("status = 'active' AND correlation_key IS NOT NULL"),
+    ),
 )
 
 
