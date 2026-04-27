@@ -63,6 +63,20 @@ class RouterModeEnum(str, Enum):
     DA_ONLY = "DA_ONLY"
 
 
+class PillarEnum(str, Enum):
+    """
+    The three product pillars a workspace can have enabled, in any
+    combination. Replaces the conflated single-value RouterModeEnum
+    as the source-of-truth for "what does this workspace do" — see
+    `workspace.enabled_pillars` and the alembic migration that adds
+    it. RouterModeEnum stays for now (agent-platform still reads it);
+    the gateway writes both during a transition window.
+    """
+    ENTERPRISE_SEARCH = "ENTERPRISE_SEARCH"
+    DATA_ANALYTICS = "DATA_ANALYTICS"
+    WORKFLOW_EXECUTION = "WORKFLOW_EXECUTION"
+
+
 class RetrievalStrategyEnum(str, Enum):
     SEMANTIC = "SEMANTIC"
     KEYWORD = "KEYWORD"

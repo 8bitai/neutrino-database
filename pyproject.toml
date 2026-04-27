@@ -1,0 +1,16 @@
+# Pytest + tooling config for neutrino-database.
+#
+# This file deliberately does NOT replace `pyproject.py` (which is a
+# regular Python module exposing PROJECT_ROOT). Both can coexist;
+# pyproject.toml is the standard discovery path for pytest config.
+#
+# Full lint/format parity with neutrino-gateway (ruff, format-check,
+# CI hooks) is tracked as task #29 — kept out of this file so the
+# inaugural test-infra commit stays focused.
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

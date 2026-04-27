@@ -16,6 +16,7 @@ from neutrino_database.models.enums import (
     KeyStatusEnum,
     MemberSourceEnum,
     MessageRoleEnum,
+    PillarEnum,
     RetrievalStrategyEnum,
     RouterModeEnum,
     RunStatus,
@@ -344,6 +345,11 @@ tenant = Table(
     Column("status_updated_by", UUID(as_uuid=False), nullable=True),
     Column("status_reason", Text, nullable=True),
     Column("tenant_owner", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+    # First-class signal of "this tenant has finished initial onboarding."
+    # Stamped atomically by POST /api/v1/onboarding/complete; replaces the
+    # !workspace_id proxy used by the FE post-auth callback to decide
+    # /welcome vs /chat.
+    Column("onboarding_completed_at", TIMESTAMP(timezone=True), nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
@@ -527,6 +533,17 @@ workspace = Table(
     Column("name", String(255), nullable=False),
     Column("description", Text, nullable=True),
     Column("status", PgEnum(WorkspaceStatusEnum, name="workspace_status"), nullable=False, server_default=WorkspaceStatusEnum.ACTIVE.name),
+    # Multi-select pillar enablement. Replaces the single-value
+    # orchestrator_config.router_mode as source-of-truth for "what
+    # this workspace does." During the transition window the gateway
+    # writes both; agent-platform still reads router_mode. A later
+    # cleanup migration drops router_mode once readers catch up.
+    Column(
+        "enabled_pillars",
+        ARRAY(PgEnum(PillarEnum, name="pillar")),
+        nullable=False,
+        server_default=text("'{}'::pillar[]"),
+    ),
     Column("created_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),

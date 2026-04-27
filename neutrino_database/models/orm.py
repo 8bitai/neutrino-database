@@ -6,6 +6,7 @@ from neutrino_database.models.enums import (
     KeyStatusEnum,
     MemberSourceEnum,
     MessageRoleEnum,
+    PillarEnum,
     RetrievalStrategyEnum,
     RouterModeEnum,
     RunStatus,
@@ -88,6 +89,7 @@ class Tenant(Base):
     status_updated_by: Mapped[Optional[str]]
     status_reason: Mapped[Optional[str]]
     tenant_owner: Mapped[Optional[str]]
+    onboarding_completed_at: Mapped[Optional[datetime]]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
     deleted_at: Mapped[Optional[datetime]]
@@ -489,6 +491,7 @@ class Workspace(Base):
     name: Mapped[str]
     description: Mapped[Optional[str]]
     status: Mapped[WorkspaceStatusEnum]
+    enabled_pillars: Mapped[List[PillarEnum]]
     created_by: Mapped[Optional[str]]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
