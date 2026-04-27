@@ -942,6 +942,12 @@ underwriting_sessions = Table(
     Column("chat_started_at", TIMESTAMP(timezone=True), nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
+    Column("los_application_id", Text, nullable=True, unique=True),
+    Column("channel", Text, nullable=True),
+    Column("officer_name", Text, nullable=True),
+    Column("phone", Text, nullable=True),
+    Column("dob", Text, nullable=True),
+    Column("employment_type", Text, nullable=True),
 )
 
 

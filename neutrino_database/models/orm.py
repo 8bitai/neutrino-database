@@ -862,3 +862,32 @@ class Provider(Base):  # ← Singular, not Providers
         foreign_keys="Provider.created_by",  # ← Changed from LLMProvider
         back_populates="created_providers"  # ← Changed from created_llm_providers
     )
+
+
+class UnderwritingSession(Base):
+    """ORM wrapper for underwriting_sessions table."""
+    __table__ = tables.underwriting_sessions
+
+    session_id: Mapped[str]
+    application_id: Mapped[str]
+    applicant_name: Mapped[Optional[str]]
+    email: Mapped[Optional[str]]
+    address: Mapped[Optional[str]]
+    loan_product: Mapped[Optional[str]]
+    loan_amount: Mapped[Optional[float]]
+    loan_tenure_months: Mapped[Optional[int]]
+    monthly_income: Mapped[Optional[float]]
+    employer_name: Mapped[Optional[str]]
+    loan_purpose: Mapped[Optional[str]]
+    dti_threshold: Mapped[Optional[float]]
+    status: Mapped[Optional[str]]
+    tenant_id: Mapped[Optional[str]]
+    chat_started_at: Mapped[Optional[datetime]]
+    created_at: Mapped[Optional[datetime]]
+    updated_at: Mapped[Optional[datetime]]
+    los_application_id: Mapped[Optional[str]]
+    channel: Mapped[Optional[str]]
+    officer_name: Mapped[Optional[str]]
+    phone: Mapped[Optional[str]]
+    dob: Mapped[Optional[str]]
+    employment_type: Mapped[Optional[str]]
