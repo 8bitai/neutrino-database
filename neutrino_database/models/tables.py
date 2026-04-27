@@ -597,6 +597,11 @@ workspace_invitation = Table(
     Column("inviter", UUID(as_uuid=False), ForeignKey("user.id", ondelete="CASCADE"), nullable=False),
     Column("email", String(320), nullable=False),
     Column("is_workspace_admin", Boolean, nullable=False, server_default=text("false")),
+    # Optional personal note from the inviter, included verbatim in the
+    # invitation email and persisted so resend-invitation flows reuse the
+    # same wording. Length is capped at the gateway boundary (Pydantic),
+    # not at the column — the DB stays permissive.
+    Column("personal_message", Text, nullable=True),
     Column("expires_at", TIMESTAMP(timezone=True), nullable=False),
     Column("accepted_at", TIMESTAMP(timezone=True), nullable=True),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),

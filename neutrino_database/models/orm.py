@@ -623,6 +623,7 @@ class WorkspaceInvitation(Base):
     inviter: Mapped[str]
     email: Mapped[str]
     is_workspace_admin: Mapped[bool]
+    personal_message: Mapped[Optional[str]]
     expires_at: Mapped[datetime]
     accepted_at: Mapped[Optional[datetime]]
     deleted_at: Mapped[Optional[datetime]]

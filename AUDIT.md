@@ -63,3 +63,22 @@
 10. **Test placement — schema tests in this repo, not the consumer's**
     *Why:* First instinct (called out by user) was to put the schema tests in `neutrino-gateway/tests/` because that's where the Postgres test infra already lives. That's overfitting to existing infra: the database repo owns its schema, so it owns its schema tests. Putting them elsewhere creates a permanent dependency where database repo changes can only be caught by a downstream test run.
     *Fix:* Built proper test infra here (issues 1–5) and put `tests/test_onboarding_pillar_schema.py` in this repo. 8 tests across 3 classes — column existence, type/nullability, default empty array, round-trip with all three pillars, enum membership, enum casing.
+
+---
+
+## NEU-1801 (continued) — workspace_invitation.personal_message
+
+**Scope:** Persona A's onboarding wizard sends an optional personal note ("Hey Sam, I set up Neutrino — can you take it from here?"). The note is persisted on the invitation row so it can be:
+  - included verbatim in the invitation email,
+  - reused on resend,
+  - shown in the inviter's invitation-list UI.
+
+### Issues found and fixes applied
+
+11. **No column for the inviter's note**
+    *Why:* The locked user-story decision in `user-stories/tenant-onboarding.md` calls for "email + optional message" on Persona A's invite form. The schema only had `email + is_workspace_admin`, so there was nowhere to keep the note.
+    *Fix:* Added `workspace_invitation.personal_message: TEXT NULL` (in `tables.py`) + `Mapped[Optional[str]]` on the `WorkspaceInvitation` ORM class. DB stays permissive (TEXT, no length cap); the gateway caps length at the API boundary via Pydantic so we can adjust without a schema change. Reversible alembic migration `m0n1p2q3r4s5_add_workspace_invitation_personal_message.py`. Verified end-to-end against `neutrino_v2`: upgrade → assertion → downgrade → upgrade.
+
+12. **3 schema tests pin the contract**
+    *Why:* TDD discipline + future-proofing — same shape as the onboarding/pillar tests in this repo.
+    *Fix:* `tests/test_invitation_personal_message.py`: column exists + nullable, round-trips a real value, omitting the field results in NULL (no sentinel default — absence is the meaningful signal).
