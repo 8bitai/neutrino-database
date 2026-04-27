@@ -3,7 +3,8 @@ __pycache__/
 *.py[codz]
 *$py.class
 .idea/
-.DS_Store
+**/.DS_Store
+alembic/.DS_Store
 
 # C extensions
 *.so
