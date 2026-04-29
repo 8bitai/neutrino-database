@@ -90,6 +90,8 @@ class Tenant(Base):
     status_reason: Mapped[Optional[str]]
     tenant_owner: Mapped[Optional[str]]
     onboarding_completed_at: Mapped[Optional[datetime]]
+    max_workspaces: Mapped[int]
+    allowed_invitation_domains: Mapped[List[str]]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
     deleted_at: Mapped[Optional[datetime]]
@@ -496,6 +498,8 @@ class Workspace(Base):
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
     deleted_at: Mapped[Optional[datetime]]
+    deletion_scheduled_for: Mapped[Optional[datetime]]
+    deletion_initiated_by: Mapped[Optional[str]]
 
     # Relationships
     tenant: Mapped["Tenant"] = relationship(
@@ -889,3 +893,29 @@ class AuditLog(Base):
     ip_address: Mapped[Optional[str]]
     user_agent: Mapped[Optional[str]]
     occurred_at: Mapped[datetime]
+
+
+class TenancyOwnershipTransfer(Base):
+    """ORM wrapper for tenancy_ownership_transfer (NEU-X3).
+
+    A pending row exists from the moment the Owner clicks "Transfer
+    ownership" until the target accepts, the Owner cancels, the
+    7-day window expires, or the retention runner sweeps the row.
+    Only one pending row per tenant at any time (partial unique
+    index in tables.py).
+
+    See user-stories/tenant-admin-actions.md § 4 (Primary Ownership
+    transfer) for the lifecycle.
+    """
+
+    __table__ = tables.tenancy_ownership_transfer
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    from_user_id: Mapped[Optional[str]]
+    to_user_id: Mapped[Optional[str]]
+    token: Mapped[str]
+    expires_at: Mapped[datetime]
+    accepted_at: Mapped[Optional[datetime]]
+    cancelled_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]

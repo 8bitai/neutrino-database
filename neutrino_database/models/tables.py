@@ -350,6 +350,24 @@ tenant = Table(
     # !workspace_id proxy used by the FE post-auth callback to decide
     # /welcome vs /chat.
     Column("onboarding_completed_at", TIMESTAMP(timezone=True), nullable=True),
+    # Per-tenant cap on active workspaces (NEU-1805 § 1d). Soft-deleted
+    # workspaces don't count; the retention runner cleans them up at
+    # 30 days. Default 50 covers real teams; enterprise raises it via a
+    # one-row UPDATE rather than a code change.
+    Column("max_workspaces", Integer, nullable=False, server_default=text("50")),
+    # Owner-controlled domain allowlist for invitations (NEU-X4).
+    # Empty array = no restriction (anyone can be invited). Non-empty
+    # = invitations rejected unless the invitee's email domain is in
+    # the list. Owner edits this via /tenants/{id}/settings.
+    # Replaces the previous hardcoded "must match owner email domain"
+    # check that broke for orgs with multiple legitimate domains
+    # (IBM: ibm.com, ibm.co.in, ibm.co.uk, …).
+    Column(
+        "allowed_invitation_domains",
+        ARRAY(Text),
+        nullable=False,
+        server_default=text("'{}'::text[]"),
+    ),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
@@ -548,10 +566,41 @@ workspace = Table(
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
+    # Soft-delete-with-grace metadata (NEU-1805 § 1c). The retention
+    # runner uses deletion_scheduled_for to decide when to physically
+    # remove the row; the value is stored explicitly (rather than
+    # computed from deleted_at + grace period) so a future change to
+    # the grace constant doesn't silently shift existing pending
+    # deletions.
+    Column("deletion_scheduled_for", TIMESTAMP(timezone=True), nullable=True),
+    # Audit-correlatable; FK SET NULL so a user can be anonymized
+    # (GDPR Art. 17) without breaking workspace deletion history.
+    Column(
+        "deletion_initiated_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
 
-    UniqueConstraint("tenant_id", "name", name="ux_workspace_tenant_name"),
+    # Partial unique index: name uniqueness applies only to active
+    # workspaces. Soft-deleted workspaces don't block a new workspace
+    # with the same name during the 30-day grace period — without
+    # this, deleting "Engineering" would make the name unavailable
+    # for 30 days even though the deletion may yet be reversed.
+    Index(
+        "ux_workspace_tenant_name_active",
+        "tenant_id",
+        "name",
+        unique=True,
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
     Index("ix_workspace_tenant", "tenant_id"),
     Index("ix_workspace_tenant_status", "tenant_id", "status"),
+    Index(
+        "ix_workspace_pending_deletion",
+        "deletion_scheduled_for",
+        postgresql_where=text("deleted_at IS NOT NULL AND deletion_scheduled_for IS NOT NULL"),
+    ),
 )
 
 workspace_member = Table(
@@ -1139,3 +1188,74 @@ event.listen(audit_log, "after_create", _AUDIT_LOG_CREATE_TRIGGER.execute_if(dia
 # Before-drop: trigger first, then function.
 event.listen(audit_log, "before_drop", _AUDIT_LOG_DROP_TRIGGER.execute_if(dialect="postgresql"))
 event.listen(audit_log, "before_drop", _AUDIT_LOG_DROP_FUNCTION.execute_if(dialect="postgresql"))
+
+
+# ─────────────────────────────────────────────────────────────────
+# tenancy_ownership_transfer (NEU-X3)
+# ─────────────────────────────────────────────────────────────────
+#
+# Two-step ownership transfer per user-stories/tenant-admin-actions.md
+# § 4. Primary Owner initiates a transfer to a target Tenant Admin;
+# the target accepts via an email link within 7 days; the atomic
+# UPDATE swaps tenant.tenant_owner. The retention runner cancels
+# expired pending transfers nightly.
+tenancy_ownership_transfer = Table(
+    "tenancy_ownership_transfer",
+    metadata,
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # SET NULL on user delete: the transfer record survives a GDPR
+    # erasure of the actor; audit_log.actor_user_id captures the
+    # identity at time-of-action, which is what auditors care about.
+    Column(
+        "from_user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "to_user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # Random hex string used in the FE accept URL. Globally unique
+    # so the URL alone identifies the transfer; eliminates the need
+    # for the FE to know the tenant_id when handling /tenants/transfer/{token}.
+    Column("token", Text, nullable=False, unique=True),
+    Column("expires_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("accepted_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("cancelled_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    # Only ONE pending transfer per tenant at a time. Without this
+    # an Owner could fire off competing transfers and we'd race over
+    # which token wins. accepted_at IS NULL AND cancelled_at IS NULL
+    # captures "still pending" — the runner cancels expired ones.
+    Index(
+        "ux_ownership_transfer_pending_per_tenant",
+        "tenant_id",
+        unique=True,
+        postgresql_where=text(
+            "accepted_at IS NULL AND cancelled_at IS NULL"
+        ),
+    ),
+    Index("ix_ownership_transfer_token", "token"),
+    # Partial read index for the retention runner's expiry sweep.
+    Index(
+        "ix_ownership_transfer_pending_expires",
+        "expires_at",
+        postgresql_where=text(
+            "accepted_at IS NULL AND cancelled_at IS NULL"
+        ),
+    ),
+)
