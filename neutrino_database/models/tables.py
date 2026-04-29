@@ -1188,3 +1188,74 @@ event.listen(audit_log, "after_create", _AUDIT_LOG_CREATE_TRIGGER.execute_if(dia
 # Before-drop: trigger first, then function.
 event.listen(audit_log, "before_drop", _AUDIT_LOG_DROP_TRIGGER.execute_if(dialect="postgresql"))
 event.listen(audit_log, "before_drop", _AUDIT_LOG_DROP_FUNCTION.execute_if(dialect="postgresql"))
+
+
+# ─────────────────────────────────────────────────────────────────
+# tenancy_ownership_transfer (NEU-X3)
+# ─────────────────────────────────────────────────────────────────
+#
+# Two-step ownership transfer per user-stories/tenant-admin-actions.md
+# § 4. Primary Owner initiates a transfer to a target Tenant Admin;
+# the target accepts via an email link within 7 days; the atomic
+# UPDATE swaps tenant.tenant_owner. The retention runner cancels
+# expired pending transfers nightly.
+tenancy_ownership_transfer = Table(
+    "tenancy_ownership_transfer",
+    metadata,
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # SET NULL on user delete: the transfer record survives a GDPR
+    # erasure of the actor; audit_log.actor_user_id captures the
+    # identity at time-of-action, which is what auditors care about.
+    Column(
+        "from_user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "to_user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # Random hex string used in the FE accept URL. Globally unique
+    # so the URL alone identifies the transfer; eliminates the need
+    # for the FE to know the tenant_id when handling /tenants/transfer/{token}.
+    Column("token", Text, nullable=False, unique=True),
+    Column("expires_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("accepted_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("cancelled_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    # Only ONE pending transfer per tenant at a time. Without this
+    # an Owner could fire off competing transfers and we'd race over
+    # which token wins. accepted_at IS NULL AND cancelled_at IS NULL
+    # captures "still pending" — the runner cancels expired ones.
+    Index(
+        "ux_ownership_transfer_pending_per_tenant",
+        "tenant_id",
+        unique=True,
+        postgresql_where=text(
+            "accepted_at IS NULL AND cancelled_at IS NULL"
+        ),
+    ),
+    Index("ix_ownership_transfer_token", "token"),
+    # Partial read index for the retention runner's expiry sweep.
+    Index(
+        "ix_ownership_transfer_pending_expires",
+        "expires_at",
+        postgresql_where=text(
+            "accepted_at IS NULL AND cancelled_at IS NULL"
+        ),
+    ),
+)

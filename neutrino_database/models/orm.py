@@ -893,3 +893,29 @@ class AuditLog(Base):
     ip_address: Mapped[Optional[str]]
     user_agent: Mapped[Optional[str]]
     occurred_at: Mapped[datetime]
+
+
+class TenancyOwnershipTransfer(Base):
+    """ORM wrapper for tenancy_ownership_transfer (NEU-X3).
+
+    A pending row exists from the moment the Owner clicks "Transfer
+    ownership" until the target accepts, the Owner cancels, the
+    7-day window expires, or the retention runner sweeps the row.
+    Only one pending row per tenant at any time (partial unique
+    index in tables.py).
+
+    See user-stories/tenant-admin-actions.md § 4 (Primary Ownership
+    transfer) for the lifecycle.
+    """
+
+    __table__ = tables.tenancy_ownership_transfer
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    from_user_id: Mapped[Optional[str]]
+    to_user_id: Mapped[Optional[str]]
+    token: Mapped[str]
+    expires_at: Mapped[datetime]
+    accepted_at: Mapped[Optional[datetime]]
+    cancelled_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
