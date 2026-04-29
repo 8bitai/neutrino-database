@@ -90,6 +90,7 @@ class Tenant(Base):
     status_reason: Mapped[Optional[str]]
     tenant_owner: Mapped[Optional[str]]
     onboarding_completed_at: Mapped[Optional[datetime]]
+    max_workspaces: Mapped[int]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
     deleted_at: Mapped[Optional[datetime]]
@@ -496,6 +497,8 @@ class Workspace(Base):
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
     deleted_at: Mapped[Optional[datetime]]
+    deletion_scheduled_for: Mapped[Optional[datetime]]
+    deletion_initiated_by: Mapped[Optional[str]]
 
     # Relationships
     tenant: Mapped["Tenant"] = relationship(
