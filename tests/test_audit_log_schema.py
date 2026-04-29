@@ -31,7 +31,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from neutrino_database.models.enums import TenantStatusEnum
-from neutrino_database.models.orm import Tenant
+from neutrino_database.models.orm import AuditLog, Tenant
 
 
 def _unique() -> str:
@@ -195,64 +195,70 @@ class TestAuditLogTable:
 class TestAuditLogInsert:
     @pytest.mark.asyncio
     async def test_can_insert_minimal_row(self, test_engine):
-        """A row with only the required columns set must persist."""
+        """A row with only the required columns set must persist; defaults
+        for event_metadata ({}) and occurred_at (now()) come from the
+        server, not from the ORM."""
         SessionMaker = async_sessionmaker(bind=test_engine, expire_on_commit=False)
         tenant_id = await _seed_tenant(SessionMaker)
         try:
-            async with test_engine.begin() as conn:
-                row_id = uuid.uuid4()
-                await conn.execute(
-                    sa.text(
-                        "INSERT INTO audit_log "
-                        "(id, tenant_id, event_type, resource_type, resource_id) "
-                        "VALUES (:id, :tenant_id, 'tenant.created', 'tenant', :resource_id)"
-                    ),
-                    {"id": str(row_id), "tenant_id": tenant_id, "resource_id": tenant_id},
+            row_id = str(uuid.uuid4())
+            async with SessionMaker() as session:
+                async with session.begin():
+                    session.add(
+                        AuditLog(
+                            id=row_id,
+                            tenant_id=tenant_id,
+                            event_type="tenant.created",
+                            resource_type="tenant",
+                            resource_id=tenant_id,
+                        )
+                    )
+
+            async with SessionMaker() as verify:
+                fetched = await verify.get(AuditLog, row_id)
+                assert fetched is not None
+                # event_metadata defaults to {} via server_default — verify
+                # via the ORM type round-trip (JSONB → dict).
+                assert fetched.event_metadata == {}, (
+                    f"event_metadata should default to {{}}; got {fetched.event_metadata!r}"
                 )
-                result = await conn.execute(
-                    sa.text(
-                        "SELECT event_metadata::text AS m, occurred_at "
-                        "FROM audit_log WHERE id = :id"
-                    ),
-                    {"id": str(row_id)},
-                )
-                row = result.fetchone()
-                assert row is not None
-                # event_metadata defaults to '{}'
-                assert row.m == "{}", (
-                    f"event_metadata should default to '{{}}'; got {row.m!r}"
-                )
-                # occurred_at defaults to now() and is timezone-aware
-                assert row.occurred_at is not None
-                assert row.occurred_at.tzinfo is not None
+                # occurred_at defaults to now() and is timezone-aware.
+                assert fetched.occurred_at is not None
+                assert fetched.occurred_at.tzinfo is not None
         finally:
             await _drop_tenant(SessionMaker, tenant_id)
 
     @pytest.mark.asyncio
     async def test_can_insert_with_full_metadata(self, test_engine):
-        """A row with metadata, ip, user-agent persists those values."""
+        """A row with metadata, ip, user-agent persists those values.
+
+        We assert the JSONB value via ``event_metadata->>'name'`` and
+        the INET value via ``host(ip_address)`` — those PG-specific
+        operators stay raw on purpose: that's what's being tested. The
+        INSERT itself uses the ORM so we exercise the same code path
+        the application does.
+        """
         SessionMaker = async_sessionmaker(bind=test_engine, expire_on_commit=False)
         tenant_id = await _seed_tenant(SessionMaker)
         try:
-            async with test_engine.begin() as conn:
-                row_id = uuid.uuid4()
-                await conn.execute(
-                    sa.text(
-                        "INSERT INTO audit_log "
-                        "(id, tenant_id, event_type, resource_type, resource_id, "
-                        " event_metadata, ip_address, user_agent) "
-                        "VALUES (:id, :tenant_id, 'workspace.created', 'workspace', :rid, "
-                        " CAST(:meta AS jsonb), CAST(:ip AS inet), :ua)"
-                    ),
-                    {
-                        "id": str(row_id),
-                        "tenant_id": tenant_id,
-                        "rid": str(uuid.uuid4()),
-                        "meta": '{"name":"Engineering"}',
-                        "ip": "203.0.113.42",
-                        "ua": "Mozilla/5.0 test",
-                    },
-                )
+            row_id = str(uuid.uuid4())
+            resource_id = str(uuid.uuid4())
+            async with SessionMaker() as session:
+                async with session.begin():
+                    session.add(
+                        AuditLog(
+                            id=row_id,
+                            tenant_id=tenant_id,
+                            event_type="workspace.created",
+                            resource_type="workspace",
+                            resource_id=resource_id,
+                            event_metadata={"name": "Engineering"},
+                            ip_address="203.0.113.42",
+                            user_agent="Mozilla/5.0 test",
+                        )
+                    )
+
+            async with test_engine.connect() as conn:
                 result = await conn.execute(
                     sa.text(
                         "SELECT event_metadata->>'name' AS name, "
@@ -260,7 +266,7 @@ class TestAuditLogInsert:
                         "       user_agent "
                         "FROM audit_log WHERE id = :id"
                     ),
-                    {"id": str(row_id)},
+                    {"id": row_id},
                 )
                 row = result.fetchone()
                 assert row is not None
@@ -279,30 +285,35 @@ class TestAuditLogInsert:
 class TestAuditLogImmutability:
     @pytest.mark.asyncio
     async def test_update_raises_au001(self, test_engine):
-        """The trigger must block any UPDATE on audit_log."""
+        """The trigger must block any UPDATE on audit_log — even one
+        issued via the ORM. SQLAlchemy compiles ``sa.update(AuditLog)``
+        down to a regular UPDATE statement that hits the BEFORE UPDATE
+        trigger identically to a raw DML statement, which is exactly
+        the immutability invariant we want to pin."""
         SessionMaker = async_sessionmaker(bind=test_engine, expire_on_commit=False)
         tenant_id = await _seed_tenant(SessionMaker)
         try:
-            async with test_engine.begin() as conn:
-                row_id = uuid.uuid4()
-                await conn.execute(
-                    sa.text(
-                        "INSERT INTO audit_log "
-                        "(id, tenant_id, event_type, resource_type, resource_id) "
-                        "VALUES (:id, :tenant, 'test.event', 'test', 'r1')"
-                    ),
-                    {"id": str(row_id), "tenant": tenant_id},
-                )
+            row_id = str(uuid.uuid4())
+            async with SessionMaker() as session:
+                async with session.begin():
+                    session.add(
+                        AuditLog(
+                            id=row_id,
+                            tenant_id=tenant_id,
+                            event_type="test.event",
+                            resource_type="test",
+                            resource_id="r1",
+                        )
+                    )
 
             with pytest.raises(DBAPIError) as excinfo:
-                async with test_engine.begin() as conn:
-                    await conn.execute(
-                        sa.text(
-                            "UPDATE audit_log SET event_type = 'tampered' "
-                            "WHERE id = :id"
-                        ),
-                        {"id": str(row_id)},
-                    )
+                async with SessionMaker() as session:
+                    async with session.begin():
+                        await session.execute(
+                            sa.update(AuditLog)
+                            .where(AuditLog.id == row_id)
+                            .values(event_type="tampered")
+                        )
             sqlstate = getattr(excinfo.value.orig, "sqlstate", None)
             assert sqlstate == "AU001", (
                 f"UPDATE on audit_log must raise SQLSTATE AU001; got {sqlstate!r}"
@@ -312,27 +323,32 @@ class TestAuditLogImmutability:
 
     @pytest.mark.asyncio
     async def test_delete_raises_au001(self, test_engine):
-        """The trigger must block any DELETE on audit_log."""
+        """The trigger must block any DELETE on audit_log — same
+        rationale as the UPDATE test above; ORM-issued DELETE compiles
+        to a normal DELETE statement that the BEFORE DELETE trigger
+        intercepts."""
         SessionMaker = async_sessionmaker(bind=test_engine, expire_on_commit=False)
         tenant_id = await _seed_tenant(SessionMaker)
         try:
-            async with test_engine.begin() as conn:
-                row_id = uuid.uuid4()
-                await conn.execute(
-                    sa.text(
-                        "INSERT INTO audit_log "
-                        "(id, tenant_id, event_type, resource_type, resource_id) "
-                        "VALUES (:id, :tenant, 'test.event', 'test', 'r1')"
-                    ),
-                    {"id": str(row_id), "tenant": tenant_id},
-                )
+            row_id = str(uuid.uuid4())
+            async with SessionMaker() as session:
+                async with session.begin():
+                    session.add(
+                        AuditLog(
+                            id=row_id,
+                            tenant_id=tenant_id,
+                            event_type="test.event",
+                            resource_type="test",
+                            resource_id="r1",
+                        )
+                    )
 
             with pytest.raises(DBAPIError) as excinfo:
-                async with test_engine.begin() as conn:
-                    await conn.execute(
-                        sa.text("DELETE FROM audit_log WHERE id = :id"),
-                        {"id": str(row_id)},
-                    )
+                async with SessionMaker() as session:
+                    async with session.begin():
+                        await session.execute(
+                            sa.delete(AuditLog).where(AuditLog.id == row_id)
+                        )
             sqlstate = getattr(excinfo.value.orig, "sqlstate", None)
             assert sqlstate == "AU001", (
                 f"DELETE on audit_log must raise SQLSTATE AU001; got {sqlstate!r}"
