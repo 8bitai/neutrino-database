@@ -355,6 +355,19 @@ tenant = Table(
     # 30 days. Default 50 covers real teams; enterprise raises it via a
     # one-row UPDATE rather than a code change.
     Column("max_workspaces", Integer, nullable=False, server_default=text("50")),
+    # Owner-controlled domain allowlist for invitations (NEU-X4).
+    # Empty array = no restriction (anyone can be invited). Non-empty
+    # = invitations rejected unless the invitee's email domain is in
+    # the list. Owner edits this via /tenants/{id}/settings.
+    # Replaces the previous hardcoded "must match owner email domain"
+    # check that broke for orgs with multiple legitimate domains
+    # (IBM: ibm.com, ibm.co.in, ibm.co.uk, …).
+    Column(
+        "allowed_invitation_domains",
+        ARRAY(Text),
+        nullable=False,
+        server_default=text("'{}'::text[]"),
+    ),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),

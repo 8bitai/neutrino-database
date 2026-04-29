@@ -91,6 +91,7 @@ class Tenant(Base):
     tenant_owner: Mapped[Optional[str]]
     onboarding_completed_at: Mapped[Optional[datetime]]
     max_workspaces: Mapped[int]
+    allowed_invitation_domains: Mapped[List[str]]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
     deleted_at: Mapped[Optional[datetime]]
