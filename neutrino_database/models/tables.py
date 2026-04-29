@@ -364,8 +364,8 @@ user = Table(
 
     Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
     Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
-    Column("email", String(320), nullable=False),
-    Column("display_name", String(255), nullable=True),
+    Column("email", String(320), nullable=False, comment="pii:email"),
+    Column("display_name", String(255), nullable=True, comment="pii:name"),
     Column("status", PgEnum(UserStatusEnum, name="user_status"), nullable=False, default=UserStatusEnum.ACTIVE),
     Column("first_login_at", TIMESTAMP(timezone=True), nullable=True),
     Column("last_login_at", TIMESTAMP(timezone=True), nullable=True),
@@ -375,7 +375,7 @@ user = Table(
     Column("default_workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="SET NULL"), nullable=True),
 
     # Local auth columns — nullable so SSO-only users are unaffected
-    Column("username", String(100), nullable=True),
+    Column("username", String(100), nullable=True, comment="pii:name"),
     Column("password_hash", Text, nullable=True),
     Column("must_change_password", Boolean, nullable=False, server_default="false"),
     Column("password_changed_at", TIMESTAMP(timezone=True), nullable=True),
@@ -595,13 +595,14 @@ workspace_invitation = Table(
     Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
     Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
     Column("inviter", UUID(as_uuid=False), ForeignKey("user.id", ondelete="CASCADE"), nullable=False),
-    Column("email", String(320), nullable=False),
+    Column("email", String(320), nullable=False, comment="pii:email"),
     Column("is_workspace_admin", Boolean, nullable=False, server_default=text("false")),
     # Optional personal note from the inviter, included verbatim in the
     # invitation email and persisted so resend-invitation flows reuse the
     # same wording. Length is capped at the gateway boundary (Pydantic),
-    # not at the column — the DB stays permissive.
-    Column("personal_message", Text, nullable=True),
+    # not at the column — the DB stays permissive. Tagged pii:freetext
+    # because it may contain identifying info (names, role descriptions).
+    Column("personal_message", Text, nullable=True, comment="pii:freetext"),
     Column("expires_at", TIMESTAMP(timezone=True), nullable=False),
     Column("accepted_at", TIMESTAMP(timezone=True), nullable=True),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
