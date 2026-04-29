@@ -398,6 +398,18 @@ user = Table(
     Column("must_change_password", Boolean, nullable=False, server_default="false"),
     Column("password_changed_at", TIMESTAMP(timezone=True), nullable=True),
 
+    # NEU-X8 — Authorization-state freshness marker. Touched whenever any
+    # claim affecting this user's principal changes (promote/demote
+    # tenant admin, promote/demote workspace admin, ownership transfer
+    # accept on either side). The auth middleware compares the JWT's
+    # `iat` against this column on each request; if `permissions_changed_at`
+    # is newer, the JWT is force-renewed regardless of the normal
+    # renewal-window threshold. Closes the "promoted-but-FE-still-shows-
+    # non-admin until sign-out + sign-in" UX gap. Defaults to created_at
+    # so existing rows behave like "no change since issuance" for
+    # back-compat.
+    Column("permissions_changed_at", TIMESTAMP(timezone=True), nullable=True),
+
     UniqueConstraint("tenant_id", "email", name="ux_user_tenant_email"),
     UniqueConstraint("tenant_id", "username", name="ux_user_tenant_username"),  # NULLs excluded from uniqueness — multiple SSO-only users per tenant are valid
     Index("ix_user_tenant_status", "tenant_id", "status"),
