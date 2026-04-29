@@ -866,3 +866,26 @@ class Provider(Base):  # ← Singular, not Providers
         foreign_keys="Provider.created_by",  # ← Changed from LLMProvider
         back_populates="created_providers"  # ← Changed from created_llm_providers
     )
+
+
+class AuditLog(Base):
+    """ORM wrapper for audit_log — append-only compliance event store.
+
+    UPDATE and DELETE on this table raise SQLSTATE AU001 via the
+    audit_log_immutability Postgres trigger (installed in tables.py).
+    Use INSERT only.
+
+    See user-stories/user-lifecycle.md § "Audit log requirements".
+    """
+    __table__ = tables.audit_log
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    actor_user_id: Mapped[Optional[str]]
+    event_type: Mapped[str]
+    resource_type: Mapped[str]
+    resource_id: Mapped[str]
+    event_metadata: Mapped[dict]
+    ip_address: Mapped[Optional[str]]
+    user_agent: Mapped[Optional[str]]
+    occurred_at: Mapped[datetime]

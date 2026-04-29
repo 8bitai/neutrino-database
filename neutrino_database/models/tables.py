@@ -1,8 +1,8 @@
 from sqlalchemy import (
     Table, Column, Integer, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
-    UniqueConstraint, Numeric
+    UniqueConstraint, Numeric, DDL, event
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY
+from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, INET
 from sqlalchemy.sql import func, text
 from sqlalchemy import Boolean
 from neutrino_database.models.base import metadata
@@ -364,8 +364,8 @@ user = Table(
 
     Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
     Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
-    Column("email", String(320), nullable=False),
-    Column("display_name", String(255), nullable=True),
+    Column("email", String(320), nullable=False, comment="pii:email"),
+    Column("display_name", String(255), nullable=True, comment="pii:name"),
     Column("status", PgEnum(UserStatusEnum, name="user_status"), nullable=False, default=UserStatusEnum.ACTIVE),
     Column("first_login_at", TIMESTAMP(timezone=True), nullable=True),
     Column("last_login_at", TIMESTAMP(timezone=True), nullable=True),
@@ -375,7 +375,7 @@ user = Table(
     Column("default_workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="SET NULL"), nullable=True),
 
     # Local auth columns — nullable so SSO-only users are unaffected
-    Column("username", String(100), nullable=True),
+    Column("username", String(100), nullable=True, comment="pii:name"),
     Column("password_hash", Text, nullable=True),
     Column("must_change_password", Boolean, nullable=False, server_default="false"),
     Column("password_changed_at", TIMESTAMP(timezone=True), nullable=True),
@@ -595,13 +595,14 @@ workspace_invitation = Table(
     Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
     Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
     Column("inviter", UUID(as_uuid=False), ForeignKey("user.id", ondelete="CASCADE"), nullable=False),
-    Column("email", String(320), nullable=False),
+    Column("email", String(320), nullable=False, comment="pii:email"),
     Column("is_workspace_admin", Boolean, nullable=False, server_default=text("false")),
     # Optional personal note from the inviter, included verbatim in the
     # invitation email and persisted so resend-invitation flows reuse the
     # same wording. Length is capped at the gateway boundary (Pydantic),
-    # not at the column — the DB stays permissive.
-    Column("personal_message", Text, nullable=True),
+    # not at the column — the DB stays permissive. Tagged pii:freetext
+    # because it may contain identifying info (names, role descriptions).
+    Column("personal_message", Text, nullable=True, comment="pii:freetext"),
     Column("expires_at", TIMESTAMP(timezone=True), nullable=False),
     Column("accepted_at", TIMESTAMP(timezone=True), nullable=True),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
@@ -1037,3 +1038,104 @@ underwriting_rules = Table(
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
 )
+
+
+# ---------------------------------------------------------------------------
+# audit_log — append-only compliance event store (NEU-1804, slice C3a).
+#
+# Every meaningful mutation in the gateway writes a row here. Required by
+# SOC 2 (CC6.6), HIPAA (§ 164.312(b)), and GDPR (Art 30, 32). The
+# emitter helper lives in the gateway; this is just the storage.
+#
+# Hard rule: append-only. The BEFORE UPDATE/DELETE trigger below raises
+# SQLSTATE 'AU001' so the immutability invariant holds at the database
+# level — auditors won't accept "we promise we don't update it."
+#
+# See user-stories/user-lifecycle.md § "Audit log requirements" for the
+# product-level specification and event-type catalog.
+# ---------------------------------------------------------------------------
+
+audit_log = Table(
+    "audit_log",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    # FK is NO ACTION (default), not CASCADE: a tenant cannot be hard-deleted
+    # while audit history references it. The retention runner clears audit_log
+    # rows past their window first; tenant teardown happens after.
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id"), nullable=False),
+    # Nullable so system-initiated events (cron jobs, runners) can record without an actor.
+    # SET NULL: when a user is eventually hard-deleted (post-retention), preserve the
+    # audit entry but null out the actor reference.
+    Column("actor_user_id", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+
+    # Closed catalog — see gateway emitter. Stored as TEXT so the catalog can
+    # evolve without alembic churn; PR review enforces additions to the catalog.
+    Column("event_type", Text, nullable=False),
+    Column("resource_type", Text, nullable=False),
+    Column("resource_id", Text, nullable=False),
+
+    # Event-specific structured payload. The emitter is responsible for
+    # never putting raw PII into this column — references IDs only.
+    # Renamed from `metadata` to avoid clashing with SA DeclarativeBase.metadata.
+    Column("event_metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+
+    # Optional client-side context. PII-tagged so the C6 anonymization runner
+    # can wipe these when the actor is erased.
+    Column("ip_address", INET, nullable=True, comment="pii:ipaddress"),
+    Column("user_agent", Text, nullable=True, comment="pii:freetext"),
+
+    Column("occurred_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+
+    # Tenant-scoped read path: latest events first.
+    Index("ix_audit_log_tenant_occurred_at", "tenant_id", text("occurred_at DESC")),
+    # Filter by event_type (e.g. show me all workspace.deleted in this tenant).
+    Index("ix_audit_log_event_type", "event_type"),
+    # "What did user X do" — partial index keeps it small (skips system events).
+    Index(
+        "ix_audit_log_actor_occurred_at",
+        "actor_user_id",
+        text("occurred_at DESC"),
+        postgresql_where=text("actor_user_id IS NOT NULL"),
+    ),
+)
+
+
+# Immutability trigger. Installed via SQLAlchemy event hooks so that
+# both Base.metadata.create_all (used by tests) and the alembic
+# migration (used in real DBs) end up with the same DDL on the table.
+#
+# Split into individual statements because asyncpg doesn't support
+# multi-statement prepared statements.
+_AUDIT_LOG_CREATE_FUNCTION = DDL(
+    """
+    CREATE OR REPLACE FUNCTION audit_log_block_mutation() RETURNS trigger AS $func$
+    BEGIN
+        RAISE EXCEPTION 'audit_log is append-only; UPDATE/DELETE blocked'
+            USING ERRCODE = 'AU001';
+    END;
+    $func$ LANGUAGE plpgsql
+    """
+)
+_AUDIT_LOG_DROP_TRIGGER = DDL(
+    "DROP TRIGGER IF EXISTS audit_log_immutability ON audit_log"
+)
+_AUDIT_LOG_CREATE_TRIGGER = DDL(
+    """
+    CREATE TRIGGER audit_log_immutability
+        BEFORE UPDATE OR DELETE ON audit_log
+        FOR EACH ROW EXECUTE FUNCTION audit_log_block_mutation()
+    """
+)
+_AUDIT_LOG_DROP_FUNCTION = DDL(
+    "DROP FUNCTION IF EXISTS audit_log_block_mutation()"
+)
+
+# After-create: function first, then trigger (idempotent — drop-if-exists first).
+event.listen(audit_log, "after_create", _AUDIT_LOG_CREATE_FUNCTION.execute_if(dialect="postgresql"))
+event.listen(audit_log, "after_create", _AUDIT_LOG_DROP_TRIGGER.execute_if(dialect="postgresql"))
+event.listen(audit_log, "after_create", _AUDIT_LOG_CREATE_TRIGGER.execute_if(dialect="postgresql"))
+
+# Before-drop: trigger first, then function.
+event.listen(audit_log, "before_drop", _AUDIT_LOG_DROP_TRIGGER.execute_if(dialect="postgresql"))
+event.listen(audit_log, "before_drop", _AUDIT_LOG_DROP_FUNCTION.execute_if(dialect="postgresql"))
