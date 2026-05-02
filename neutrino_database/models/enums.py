@@ -41,6 +41,38 @@ class MemberSourceEnum(str, Enum):
     SSO_LOGIN = "SSO_LOGIN"              # User logged in via UI/Teams
     FILE_PERMISSIONS = "FILE_PERMISSIONS"  # From file permission sync
 
+
+class FileProcessingStatusEnum(str, Enum):
+    """Where a file is in its processing pipeline (X-DOC-1).
+
+    The user-visible state machine that drives the FE status surface,
+    Temporal workflow orchestration, and audit emission. See
+    ``user-stories/connect-ingestion-refactor.md`` §6 for transitions
+    and §7 for Temporal workflow architecture.
+
+    Forward path:
+        pending -> fetching -> fetched
+                -> parsing -> chunking -> embedding
+                -> indexing -> acl_replicated -> indexed
+    Terminal:
+        any -> failed (with error_code + error_message + retriable_at)
+        any -> deleted (tombstone)
+    Retry:
+        failed -> fetching (new attempt_id)
+    """
+
+    PENDING = "pending"
+    FETCHING = "fetching"
+    FETCHED = "fetched"
+    PARSING = "parsing"
+    CHUNKING = "chunking"
+    EMBEDDING = "embedding"
+    INDEXING = "indexing"
+    ACL_REPLICATED = "acl_replicated"
+    INDEXED = "indexed"
+    FAILED = "failed"
+    DELETED = "deleted"
+
 class MessageRoleEnum(str, Enum):
     USER = "USER"
     ASSISTANT = "ASSISTANT"

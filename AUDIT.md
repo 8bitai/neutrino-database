@@ -6,6 +6,31 @@
 
 ---
 
+## NEU-1807 — X-DOC-1 P1.1: file processing_status state machine + processing_state table
+
+**Branch:** `NEU-1807`
+**Status:** Done (this commit).
+
+**Issue.** Foundation schema for the X-DOC-1 connector ↔ ingestion refactor (locked in `user-stories/connect-ingestion-refactor.md`). The existing `files.status` is a free-form `String(50)` that captures only "DOWNLOADED" / "NOT INITIATED"-style strings. There is no typed state machine pinning *where in the pipeline* a file is, no error metadata for failures, and no per-file ledger for ingestion's retry / Temporal-workflow state. Without it the FE can't show live status, Temporal has no canonical place to update progress, and audit emission later (X16b) would have nothing typed to emit.
+
+**Why.** Production-grade live-status surface for the user (no more "is it indexed yet?" black box), atomic Temporal-orchestrated pipeline (every stage updates the same column the FE polls), and forward compatibility for X16b audit emission (every state transition is an audit event the documents owner emits from one place).
+
+**Fix.**
+- New PgEnum `file_processing_status` with 11 values: `pending`, `fetching`, `fetched`, `parsing`, `chunking`, `embedding`, `indexing`, `acl_replicated`, `indexed`, `failed`, `deleted`. Transitions documented in `connect-ingestion-refactor.md` §6.
+- `files.processing_status` (typed enum, NOT NULL, default `'pending'`) + companions: `status_updated_at`, `error_code`, `error_message`, `error_retriable_at`. Existing rows backfilled to `'indexed'` (or `'deleted'` when `is_deleted = true`) — production rows have already cleared the legacy pipeline.
+- New table `file_processing_state` keyed by `file_id` with `ON DELETE CASCADE`: `temporal_workflow_id`, `attempt_id`, `last_activity`, `retry_count`, `next_retry_at`, `payload (jsonb)`, timestamps. Lazy — only created when ingestion picks the file up.
+- Indexes: `ix_files_workspace_processing_status` (FE/admin filter shape), `ix_file_processing_state_due_retries` partial (retry runner sweep).
+- Existing `files.status` left in place as legacy — TD-DOC-2 to drop once no reader remains.
+- Python `FileProcessingStatusEnum` mirrors the DB type; pinned by `test_python_enum_matches_db_enum_values`.
+- 8 schema tests pin: enum value set, default, unknown-value rejection, FK cascade on file delete, side-table defaults, PK uniqueness, both indexes exist. All green; alembic round-trip (upgrade → downgrade → upgrade) verified on a fresh DB.
+
+**Slice plan:** P1.1 (this) → P1.2 documents-owner endpoint contracts in ingestion-service → P1.3 OpenFGAService relocation + connector-service shim. After Phase 1 lands, Phases 2-7 wire MinIO pre-signed URLs, the connector adapter cutover, the cascade-delete ordering, and the Temporal workflow itself.
+
+**Tracked debt:**
+- TD-DOC-2 — drop legacy `files.status` `String(50)` column once X-DOC-1 cutover finishes. Not in this commit (still has writers).
+
+---
+
 ## NEU-1801 — DB Task 0a: pytest + Postgres test fixture (inaugural test infra)
 
 **Branch:** `NEU-1801`
