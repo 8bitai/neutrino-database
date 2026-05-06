@@ -732,6 +732,12 @@ workspace_member = Table(
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
 
+    # X-WORKSPACE-MEMBER-UX-1 P3 — first-visit timestamp drives the
+    # cinematic-welcome trigger. NULL = hasn't visited yet (cinematic
+    # plays on next landing). Per-membership-row rather than
+    # per-user so a member removed and re-added gets a fresh welcome.
+    Column("first_visited_at", TIMESTAMP(timezone=True), nullable=True),
+
     UniqueConstraint("workspace_id", "user_id", name="ux_workspace_member_workspace_user"),
     Index("ix_workspace_member_workspace", "workspace_id"),
     Index("ix_workspace_member_user", "user_id"),
