@@ -12,6 +12,7 @@ from neutrino_database.models.enums import (
     AllowedModuleEnum,
     ConnectionStatus,
     ExcelDatasetStatus,
+    FileProcessingStatusEnum,
     IdpProviderEnum,
     KeyStatusEnum,
     MemberSourceEnum,
@@ -48,8 +49,32 @@ files = Table(
     Column("file_size_bytes", BigInteger, nullable=False),
     Column("file_sha256", String(64), nullable=False),
 
-    # status
+    # Legacy free-form status (kept for backwards compatibility; deprecated
+    # in favour of `processing_status` below — see TD-DOC-2).
     Column("status", String(50), nullable=False, server_default=text("'DOWNLOADED'")),
+
+    # X-DOC-1 typed pipeline-state machine. Drives the FE status surface,
+    # Temporal workflow orchestration, and audit emission. See
+    # `user-stories/connect-ingestion-refactor.md` §6 for transitions.
+    Column(
+        "processing_status",
+        PgEnum(
+            FileProcessingStatusEnum,
+            name="file_processing_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'pending'"),
+    ),
+    Column(
+        "status_updated_at",
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+    Column("error_code", String(64), nullable=True),
+    Column("error_message", Text, nullable=True),
+    Column("error_retriable_at", TIMESTAMP(timezone=True), nullable=True),
 
     # Timestamps
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
@@ -59,6 +84,87 @@ files = Table(
     Column("is_deleted", Boolean, nullable=False, server_default=text("false")),
 
     Column("permission_mirroring_status", String(50), nullable=False, server_default=text("'NOT INITIATED'")),
+
+    # Per-workspace + status filter is the dominant FE/admin query shape
+    # ("show me failed files in this workspace").
+    Index("ix_files_workspace_processing_status", "workspace_id", "processing_status"),
+)
+
+
+# ---------------------------------------------------------------------------
+# X-DOC-1: ingestion's private retry / Temporal-state ledger.
+#
+# One row per file (lazy — only created when ingestion picks the file up).
+# The canonical user-visible state stays on the `files` row; this side
+# table holds retry counters, the current Temporal workflow id, and
+# stage-specific payloads that would otherwise pollute the canonical row.
+# Decision 5.9 in connect-ingestion-refactor.md.
+# ---------------------------------------------------------------------------
+file_processing_state = Table(
+    "file_processing_state",
+    metadata,
+    Column(
+        "file_id",
+        UUID(as_uuid=True),
+        ForeignKey("files.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "temporal_workflow_id",
+        String(255),
+        nullable=True,
+        comment="Temporal workflow id for the in-flight ingestion run; "
+                "shape: 'file:{uuid}'",
+    ),
+    Column(
+        "attempt_id",
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+        comment="Increments on each retry of the full pipeline. "
+                "Used as part of the idempotency key for chunk / "
+                "embedding writes.",
+    ),
+    Column(
+        "last_activity",
+        String(64),
+        nullable=True,
+        comment="Name of the most recently observed activity, e.g. "
+                "'parse', 'chunk', 'embed', 'index', 'replicate_acl'.",
+    ),
+    Column(
+        "retry_count",
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+    ),
+    Column("next_retry_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "payload",
+        JSONB,
+        nullable=True,
+        comment="Activity-specific opaque state. Ingestion writes here; "
+                "documents-owner doesn't interpret.",
+    ),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    ),
+
+    Index(
+        "ix_file_processing_state_due_retries",
+        "next_retry_at",
+        postgresql_where=text("next_retry_at IS NOT NULL"),
+    ),
 )
 
 
@@ -625,6 +731,12 @@ workspace_member = Table(
     Column("is_workspace_admin", Boolean, nullable=False, server_default=text("false")),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    # X-WORKSPACE-MEMBER-UX-1 P3 — first-visit timestamp drives the
+    # cinematic-welcome trigger. NULL = hasn't visited yet (cinematic
+    # plays on next landing). Per-membership-row rather than
+    # per-user so a member removed and re-added gets a fresh welcome.
+    Column("first_visited_at", TIMESTAMP(timezone=True), nullable=True),
 
     UniqueConstraint("workspace_id", "user_id", name="ux_workspace_member_workspace_user"),
     Index("ix_workspace_member_workspace", "workspace_id"),

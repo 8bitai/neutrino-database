@@ -573,6 +573,7 @@ class WorkspaceMember(Base):
     is_workspace_admin: Mapped[bool]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
+    first_visited_at: Mapped[Optional[datetime]]
 
     # Relationships
     workspace: Mapped["Workspace"] = relationship(
