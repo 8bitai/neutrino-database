@@ -102,12 +102,39 @@ class TestDAConnectionTable:
             "connection_name",
             "credentials",
             "status",
+            "allowed_schemas",
             "created_by",
             "created_at",
             "updated_at",
         }
         missing = expected - cols.keys()
         assert not missing, f"da_connection missing required columns: {missing}"
+
+    @pytest.mark.asyncio
+    async def test_allowed_schemas_is_nullable_jsonb(self, test_engine):
+        """``allowed_schemas`` restricts which warehouse schemas Neutrino
+        is allowed to access for this connection. NULL means
+        unrestricted (Tenant Admin opted to allow everything); a list
+        of names is the whitelist (Tenant Admin restricted it).
+
+        Must be JSONB (storing a list[str]) and nullable so existing
+        connections backfill cleanly with NULL = unrestricted.
+        """
+        cols = await _columns(test_engine, "da_connection")
+        assert "allowed_schemas" in cols, (
+            "da_connection.allowed_schemas required for tenant-level "
+            "schema allowlist (NEU-1811 DA-P1f)."
+        )
+        col = cols["allowed_schemas"]
+        assert col["nullable"] is True, (
+            "allowed_schemas must be nullable — NULL is the unrestricted "
+            "state; existing connections backfill cleanly."
+        )
+        # SQLAlchemy reports JSONB as `JSONB` instance.
+        type_str = str(col["type"]).upper()
+        assert "JSONB" in type_str, (
+            f"allowed_schemas must be JSONB (list[str]); got type={type_str!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_credentials_is_pii_tagged(self, test_engine):

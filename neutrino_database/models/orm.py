@@ -960,6 +960,8 @@ class DAConnection(Base):
     connection_name: Mapped[str]
     credentials: Mapped[dict]  # KMS-wrapped JSONB
     status: Mapped[DAConnectionStatusEnum]
+    # NULL = unrestricted; list[str] = tenant-allowed schema whitelist.
+    allowed_schemas: Mapped[Optional[list]]
     created_by: Mapped[Optional[str]]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]

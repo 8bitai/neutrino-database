@@ -1460,6 +1460,14 @@ da_connection = Table(
         nullable=False,
         server_default=text("'pending_auth'"),
     ),
+    # Tenant-level schema allowlist (NEU-1811 DA-P1f).
+    #   NULL          → unrestricted; workspace admins see every schema
+    #                   the warehouse exposes.
+    #   list[str]     → whitelist; only these schemas are visible to
+    #                   workspace admins and queryable via execute_query.
+    # Enforced at the connector-service adapter / endpoint layer; this
+    # column is the source-of-truth.
+    Column("allowed_schemas", JSONB, nullable=True),
     # SET NULL so a user erasure (GDPR Art 17) doesn't take the connection
     # down with the actor row.
     Column(

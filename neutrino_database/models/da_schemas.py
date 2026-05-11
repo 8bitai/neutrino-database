@@ -124,6 +124,9 @@ class DAConnection(_DABase):
     connection_name: str
     credentials: dict  # KMS-wrapped; opaque to consumers
     status: DAConnectionStatusEnum
+    # Tenant-level schema allowlist (NEU-1811 DA-P1f). None = unrestricted;
+    # list[str] = whitelist of allowed schema names.
+    allowed_schemas: Optional[list[str]] = None
     created_by: Optional[UUID] = None
     created_at: datetime
     updated_at: datetime
