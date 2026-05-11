@@ -1,22 +1,38 @@
 """
-Schema tests for the Data Analytics metadata layer (NEU-1811 DA-P0).
+Schema tests for the Data Analytics metadata layer
+(NEU-1811 DA-P0 baseline, refactored in DA-P1g for the tenant-catalog
++ workspace-overlay split).
 
-Seven tables encode the DA pillar's per-warehouse curated state. Six are
-workspace-scoped — the canonical metadata layer described in
-``product-feature-roadmap/data-analytics/data-flow.md`` §4.8. One
-(``da_connection``) is tenant-scoped — the trust relationship + warehouse
-credentials described in §Step 1 of the same doc.
+Layered design (locked in DA-P1g):
+
+  * ``da_connection`` — tenant-level Connection (credentials + lifecycle).
+  * ``da_catalog_schema`` / ``da_catalog_table`` / ``da_catalog_column``
+    — tenant-level **facts** about what's in the warehouse. Discovered
+    by the connector-service sync job, **shared across every workspace
+    in the tenant**, written once per re-sync. Facts include PII /
+    restricted classification.
+  * ``workspace_curation_da_table`` / ``workspace_curation_da_column``
+    — workspace-level thin **opinions** layered on top of the catalog
+    (is_included / archived / admin seed descriptions / AI descriptions
+    / per-workspace LLM context fields). One row per
+    (workspace_id, catalog_row_id).
+  * ``metric`` / ``join_hint`` — workspace-scoped (opinions), unchanged.
+  * ``description_version`` — append-only version history, unchanged.
+
+Why the split exists (production-grade pattern — Looker / dbt / Hex /
+Metabase): a column either IS or ISN'T PII; that's a fact about the
+data, not about whose workspace is viewing it. AI descriptions vary by
+business context per workspace. Facts at tenant, opinions per workspace.
+See ``product-feature-roadmap/data-analytics/data-flow.md`` §4.8 and
+the DA-P1g design discussion log.
 
 Service ownership (locked as F4 in ``data-analytics/feature.md``):
 
-  * ``connector-service`` owns lifecycle CRUD on ``da_connection`` (creating
-    / updating / deleting tenant-level connections, holding adapter
-    abstractions, executing SQL).
-  * ``agent-platform`` owns every write to the six workspace-scoped tables —
-    ``workspace_metadata_connection``, ``workspace_metadata_table``,
-    ``workspace_metadata_column``, ``metric``, ``join_hint``,
-    ``description_version`` — plus all LLM calls (description generation,
-    T2S, semantic-layer work).
+  * ``connector-service`` owns CRUD on ``da_connection`` + writes to
+    ``da_catalog_*`` during sync (discovery is a fact-gathering pass).
+  * ``agent-platform`` owns writes to ``workspace_curation_da_*`` +
+    ``metric`` / ``join_hint`` / ``description_version`` + all LLM
+    calls (description generation, T2S, semantic-layer work).
 
 This file pins the canonical schema shape:
 
@@ -80,7 +96,31 @@ def _ondelete(fk: dict) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Old workspace_metadata_* tables are GONE — replaced by the
+# tenant-catalog + workspace-overlay split. The migration drops them.
+# ---------------------------------------------------------------------------
+
+
+class TestOldWorkspaceMetadataTablesRemoved:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "table_name",
+        [
+            "workspace_metadata_connection",
+            "workspace_metadata_table",
+            "workspace_metadata_column",
+        ],
+    )
+    async def test_old_table_dropped(self, test_engine, table_name):
+        assert not await _table_exists(test_engine, table_name), (
+            f"{table_name} should be dropped — replaced by da_catalog_* "
+            "(tenant) + workspace_curation_da_* (workspace) split."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Table 1 — da_connection (tenant-level Connection per data-flow.md Step 1)
+# Unchanged in DA-P1g.
 # ---------------------------------------------------------------------------
 
 
@@ -88,8 +128,7 @@ class TestDAConnectionTable:
     @pytest.mark.asyncio
     async def test_table_exists(self, test_engine):
         assert await _table_exists(test_engine, "da_connection"), (
-            "da_connection is the tenant-level DA Connection table per "
-            "data-flow.md Step 1 — one row per tenant warehouse credential."
+            "da_connection must exist — tenant-level Connection."
         )
 
     @pytest.mark.asyncio
@@ -108,82 +147,49 @@ class TestDAConnectionTable:
             "updated_at",
         }
         missing = expected - cols.keys()
-        assert not missing, f"da_connection missing required columns: {missing}"
+        assert not missing, (
+            f"da_connection missing required columns: {missing}"
+        )
 
     @pytest.mark.asyncio
     async def test_allowed_schemas_is_nullable_jsonb(self, test_engine):
-        """``allowed_schemas`` restricts which warehouse schemas Neutrino
-        is allowed to access for this connection. NULL means
-        unrestricted (Tenant Admin opted to allow everything); a list
-        of names is the whitelist (Tenant Admin restricted it).
-
-        Must be JSONB (storing a list[str]) and nullable so existing
-        connections backfill cleanly with NULL = unrestricted.
-        """
         cols = await _columns(test_engine, "da_connection")
-        assert "allowed_schemas" in cols, (
-            "da_connection.allowed_schemas required for tenant-level "
-            "schema allowlist (NEU-1811 DA-P1f)."
-        )
-        col = cols["allowed_schemas"]
+        col = cols.get("allowed_schemas")
+        assert col is not None
         assert col["nullable"] is True, (
-            "allowed_schemas must be nullable — NULL is the unrestricted "
-            "state; existing connections backfill cleanly."
+            "allowed_schemas is nullable — null means 'unrestricted'."
         )
-        # SQLAlchemy reports JSONB as `JSONB` instance.
-        type_str = str(col["type"]).upper()
-        assert "JSONB" in type_str, (
-            f"allowed_schemas must be JSONB (list[str]); got type={type_str!r}"
+        assert "JSONB" in str(col["type"]).upper(), (
+            f"allowed_schemas must be JSONB; got {col['type']}"
         )
 
     @pytest.mark.asyncio
     async def test_credentials_is_pii_tagged(self, test_engine):
-        """``credentials`` holds warehouse passwords / OAuth tokens. PII-tag
-        at create time per our-engineering-standards.md §13 so the C6
-        anonymization runner can find it later.
-        """
         cols = await _columns(test_engine, "da_connection")
         comment = cols["credentials"].get("comment") or ""
         assert "pii:credentials" in comment, (
             "da_connection.credentials must be tagged 'pii:credentials' "
-            "(warehouse secrets); got comment={comment!r}".format(comment=comment)
+            "(holds warehouse passwords + service-account keys)."
         )
 
     @pytest.mark.asyncio
     async def test_tenant_fk_cascade(self, test_engine):
         fks = await _foreign_keys(test_engine, "da_connection")
-        matching = [fk for fk in fks if "tenant_id" in fk["constrained_columns"]]
-        assert len(matching) == 1, (
-            f"da_connection.tenant_id should have exactly one FK to tenant(id); "
-            f"got {matching!r}"
-        )
-        assert matching[0]["referred_table"] == "tenant"
-        assert matching[0]["referred_columns"] == ["id"]
-        assert _ondelete(matching[0]) == "CASCADE", (
-            "Deleting the tenant must cascade-delete its DA connections."
+        t_fk = [fk for fk in fks if "tenant_id" in fk["constrained_columns"]]
+        assert t_fk and t_fk[0]["referred_table"] == "tenant"
+        assert _ondelete(t_fk[0]) == "CASCADE", (
+            "Deleting a tenant must cascade-delete its DA Connections."
         )
 
     @pytest.mark.asyncio
     async def test_created_by_fk_set_null(self, test_engine):
-        """``created_by`` FK to ``user(id)`` ON DELETE SET NULL — anonymization
-        (GDPR Art. 17) must not destroy the connection itself.
-        """
         fks = await _foreign_keys(test_engine, "da_connection")
         cb_fk = [fk for fk in fks if "created_by" in fk["constrained_columns"]]
-        assert cb_fk, "da_connection.created_by should FK to user(id)"
-        assert cb_fk[0]["referred_table"] == "user"
-        assert _ondelete(cb_fk[0]) == "SET NULL", (
-            "da_connection.created_by must be ON DELETE SET NULL (GDPR-safe "
-            "anonymization without destroying the connection)."
-        )
+        assert cb_fk and cb_fk[0]["referred_table"] == "user"
+        assert _ondelete(cb_fk[0]) == "SET NULL"
 
     @pytest.mark.asyncio
     async def test_unique_per_tenant_source_name(self, test_engine):
-        """Per data-flow.md §1: connection name unique per
-        (tenant_id, source_type). Two Snowflake connections in one tenant
-        can't both be named "Prod"; one Snowflake + one Postgres both
-        named "Prod" is fine.
-        """
         indexes = await _indexes(test_engine, "da_connection")
         unique = [
             idx
@@ -193,162 +199,163 @@ class TestDAConnectionTable:
             == {"tenant_id", "source_type", "connection_name"}
         ]
         assert unique, (
-            "Expected unique index over (tenant_id, source_type, connection_name) "
-            f"per data-flow.md §1; got indexes={indexes!r}"
+            "Expected unique (tenant_id, source_type, connection_name) "
+            f"on da_connection; got {indexes!r}"
         )
 
 
 # ---------------------------------------------------------------------------
-# Table 2 — workspace_metadata_connection (Entity 2 in §4.8)
+# Table 2 — da_catalog_schema (DA-P1g — tenant-level schema fact)
 # ---------------------------------------------------------------------------
 
 
-class TestWorkspaceMetadataConnectionTable:
+class TestDACatalogSchemaTable:
     @pytest.mark.asyncio
     async def test_table_exists(self, test_engine):
-        assert await _table_exists(test_engine, "workspace_metadata_connection")
+        assert await _table_exists(test_engine, "da_catalog_schema")
 
     @pytest.mark.asyncio
     async def test_required_columns(self, test_engine):
-        cols = await _columns(test_engine, "workspace_metadata_connection")
+        cols = await _columns(test_engine, "da_catalog_schema")
         expected = {
             "id",
-            "workspace_id",
-            "connection_id",
-            "source_type",
-            "connection_name",
-            "database_name",
+            "da_connection_id",
             "schema_name",
-            "schema_description",
+            "schema_description",  # native comment from the warehouse
             "last_synced_at",
             "created_at",
             "updated_at",
         }
         missing = expected - cols.keys()
         assert not missing, (
-            f"workspace_metadata_connection missing required columns: {missing}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_workspace_fk_cascade(self, test_engine):
-        fks = await _foreign_keys(test_engine, "workspace_metadata_connection")
-        ws_fk = [fk for fk in fks if "workspace_id" in fk["constrained_columns"]]
-        assert ws_fk and ws_fk[0]["referred_table"] == "workspace"
-        assert _ondelete(ws_fk[0]) == "CASCADE", (
-            "Deleting a workspace must remove its curated DA metadata."
+            f"da_catalog_schema missing required columns: {missing}"
         )
 
     @pytest.mark.asyncio
     async def test_connection_fk_cascade(self, test_engine):
-        fks = await _foreign_keys(test_engine, "workspace_metadata_connection")
-        conn_fk = [fk for fk in fks if "connection_id" in fk["constrained_columns"]]
-        assert conn_fk and conn_fk[0]["referred_table"] == "da_connection"
-        assert _ondelete(conn_fk[0]) == "CASCADE", (
-            "Removing a tenant connection must remove the workspace curation "
-            "rows that pointed at it."
+        fks = await _foreign_keys(test_engine, "da_catalog_schema")
+        c_fk = [
+            fk for fk in fks
+            if "da_connection_id" in fk["constrained_columns"]
+        ]
+        assert c_fk and c_fk[0]["referred_table"] == "da_connection"
+        assert _ondelete(c_fk[0]) == "CASCADE", (
+            "Deleting a connection must remove its catalog facts — they're "
+            "meaningless without the credential that produced them."
         )
 
     @pytest.mark.asyncio
-    async def test_uniqueness_per_workspace_conn_db_schema(self, test_engine):
-        """§4.8 Entity 2: 'One row per
-        (workspace_id, connection_id, database_name, schema_name).'
-        """
-        indexes = await _indexes(test_engine, "workspace_metadata_connection")
+    async def test_unique_per_connection_schema(self, test_engine):
+        indexes = await _indexes(test_engine, "da_catalog_schema")
         unique = [
             idx
             for idx in indexes
             if idx.get("unique")
             and set(idx.get("column_names") or [])
-            == {"workspace_id", "connection_id", "database_name", "schema_name"}
+            == {"da_connection_id", "schema_name"}
         ]
         assert unique, (
-            "Expected unique index over "
-            "(workspace_id, connection_id, database_name, schema_name) per §4.8 Entity 2; "
-            f"got {indexes!r}"
+            "Expected unique (da_connection_id, schema_name) — schemas are "
+            f"facts about the connection, no duplicates. Got {indexes!r}"
         )
 
 
 # ---------------------------------------------------------------------------
-# Table 3 — workspace_metadata_table (Entity 3 in §4.8)
+# Table 3 — da_catalog_table (DA-P1g — tenant-level table fact)
 # ---------------------------------------------------------------------------
 
 
-class TestWorkspaceMetadataTableTable:
+class TestDACatalogTableTable:
     @pytest.mark.asyncio
     async def test_table_exists(self, test_engine):
-        assert await _table_exists(test_engine, "workspace_metadata_table")
+        assert await _table_exists(test_engine, "da_catalog_table")
 
     @pytest.mark.asyncio
     async def test_required_columns(self, test_engine):
-        cols = await _columns(test_engine, "workspace_metadata_table")
+        cols = await _columns(test_engine, "da_catalog_table")
         expected = {
             "id",
-            "workspace_metadata_connection_id",
-            # DDL-derived
+            "da_catalog_schema_id",
             "table_name",
             "table_type",
             "native_comment",
             "row_count",
-            # Logical / display
-            "table_logical_name",
-            # Descriptions (precedence: admin_seed > ai_generated > native_comment)
-            "admin_seed_description",
-            "ai_generated_description",
-            # Curation + tracking
-            "is_included",
-            "is_archived",
-            "last_enriched_at",
+            "last_synced_at",
             "created_at",
             "updated_at",
         }
         missing = expected - cols.keys()
         assert not missing, (
-            f"workspace_metadata_table missing required columns: {missing}"
+            f"da_catalog_table missing required columns: {missing}"
         )
 
     @pytest.mark.asyncio
-    async def test_connection_fk_cascade(self, test_engine):
-        fks = await _foreign_keys(test_engine, "workspace_metadata_table")
-        c_fk = [
-            fk for fk in fks
-            if "workspace_metadata_connection_id" in fk["constrained_columns"]
-        ]
-        assert c_fk and c_fk[0]["referred_table"] == "workspace_metadata_connection"
-        assert _ondelete(c_fk[0]) == "CASCADE"
+    async def test_no_workspace_or_curation_columns(self, test_engine):
+        """Tenant catalog must NOT carry workspace-level opinions —
+        ``is_included``, ``admin_seed_description``,
+        ``ai_generated_description``, ``table_logical_name``, and
+        ``last_enriched_at`` all belong on ``workspace_curation_da_table``.
+        Mixing them here recreates the original anti-pattern.
+        """
+        cols = await _columns(test_engine, "da_catalog_table")
+        forbidden = {
+            "workspace_id",
+            "is_included",
+            "is_archived",
+            "admin_seed_description",
+            "ai_generated_description",
+            "table_logical_name",
+            "last_enriched_at",
+        }
+        present = forbidden & cols.keys()
+        assert not present, (
+            f"da_catalog_table must not carry workspace opinions; found "
+            f"{present}. These belong on workspace_curation_da_table."
+        )
 
     @pytest.mark.asyncio
-    async def test_uniqueness_per_connection_table_name(self, test_engine):
-        indexes = await _indexes(test_engine, "workspace_metadata_table")
+    async def test_schema_fk_cascade(self, test_engine):
+        fks = await _foreign_keys(test_engine, "da_catalog_table")
+        s_fk = [
+            fk for fk in fks
+            if "da_catalog_schema_id" in fk["constrained_columns"]
+        ]
+        assert s_fk and s_fk[0]["referred_table"] == "da_catalog_schema"
+        assert _ondelete(s_fk[0]) == "CASCADE"
+
+    @pytest.mark.asyncio
+    async def test_unique_per_schema_table_name(self, test_engine):
+        indexes = await _indexes(test_engine, "da_catalog_table")
         unique = [
             idx
             for idx in indexes
             if idx.get("unique")
             and set(idx.get("column_names") or [])
-            == {"workspace_metadata_connection_id", "table_name"}
+            == {"da_catalog_schema_id", "table_name"}
         ]
         assert unique, (
-            "Expected unique (workspace_metadata_connection_id, table_name); "
+            "Expected unique (da_catalog_schema_id, table_name); "
             f"got {indexes!r}"
         )
 
 
 # ---------------------------------------------------------------------------
-# Table 4 — workspace_metadata_column (Entity 4 in §4.8)
+# Table 4 — da_catalog_column (DA-P1g — tenant-level column fact + classification)
 # ---------------------------------------------------------------------------
 
 
-class TestWorkspaceMetadataColumnTable:
+class TestDACatalogColumnTable:
     @pytest.mark.asyncio
     async def test_table_exists(self, test_engine):
-        assert await _table_exists(test_engine, "workspace_metadata_column")
+        assert await _table_exists(test_engine, "da_catalog_column")
 
     @pytest.mark.asyncio
     async def test_required_columns(self, test_engine):
-        cols = await _columns(test_engine, "workspace_metadata_column")
+        cols = await _columns(test_engine, "da_catalog_column")
         expected = {
             "id",
-            "workspace_metadata_table_id",
-            # DDL-derived
+            "da_catalog_table_id",
+            # DDL-derived facts
             "column_name",
             "data_type",
             "nullable",
@@ -357,25 +364,101 @@ class TestWorkspaceMetadataColumnTable:
             "foreign_key_to",
             "native_comment",
             "ordinal_position",
-            # Logical / display
-            "column_logical_name",
-            # Descriptions
-            "admin_seed_description",
-            "ai_generated_description",
-            # Privacy / access
+            # Compliance classification — fact about the data, not about
+            # whose workspace is viewing it. Per SOC2 / HIPAA / GDPR
+            # this must live at the catalog (tenant) level so all
+            # workspaces see consistent PII handling.
             "is_pii",
             "is_restricted",
+            # Lifecycle
+            "last_synced_at",
+            "created_at",
+            "updated_at",
+        }
+        missing = expected - cols.keys()
+        assert not missing, (
+            f"da_catalog_column missing required columns: {missing}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_workspace_or_enrichment_columns(self, test_engine):
+        """Tenant catalog must NOT carry workspace-level enrichment —
+        AI descriptions, synonyms, sample values, valid_aggregations,
+        column_logical_name, admin_seed_description all belong on
+        ``workspace_curation_da_column``.
+        """
+        cols = await _columns(test_engine, "da_catalog_column")
+        forbidden = {
+            "workspace_id",
+            "is_included",
+            "is_archived",
+            "admin_seed_description",
+            "ai_generated_description",
+            "column_logical_name",
             "allow_sample_values",
-            # Phase-2 enrichment (admin opt-in)
             "sample_values",
             "cardinality_score",
             "statistical_profile",
-            # Semantic enrichment
             "synonyms",
             "unit",
             "format_hint",
             "valid_aggregations",
-            # Curation + tracking
+            "last_enriched_at",
+        }
+        present = forbidden & cols.keys()
+        assert not present, (
+            f"da_catalog_column must not carry workspace enrichment; "
+            f"found {present}. These belong on workspace_curation_da_column."
+        )
+
+    @pytest.mark.asyncio
+    async def test_table_fk_cascade(self, test_engine):
+        fks = await _foreign_keys(test_engine, "da_catalog_column")
+        t_fk = [
+            fk for fk in fks
+            if "da_catalog_table_id" in fk["constrained_columns"]
+        ]
+        assert t_fk and t_fk[0]["referred_table"] == "da_catalog_table"
+        assert _ondelete(t_fk[0]) == "CASCADE"
+
+    @pytest.mark.asyncio
+    async def test_unique_per_table_column_name(self, test_engine):
+        indexes = await _indexes(test_engine, "da_catalog_column")
+        unique = [
+            idx
+            for idx in indexes
+            if idx.get("unique")
+            and set(idx.get("column_names") or [])
+            == {"da_catalog_table_id", "column_name"}
+        ]
+        assert unique, (
+            "Expected unique (da_catalog_table_id, column_name); "
+            f"got {indexes!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Table 5 — workspace_curation_da_table (DA-P1g — workspace opinion overlay)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceCurationDATableTable:
+    @pytest.mark.asyncio
+    async def test_table_exists(self, test_engine):
+        assert await _table_exists(test_engine, "workspace_curation_da_table")
+
+    @pytest.mark.asyncio
+    async def test_required_columns(self, test_engine):
+        cols = await _columns(test_engine, "workspace_curation_da_table")
+        expected = {
+            "id",
+            "workspace_id",
+            "da_catalog_table_id",
+            # Per-workspace opinion / context
+            "table_logical_name",
+            "admin_seed_description",
+            "ai_generated_description",
+            # Curation
             "is_included",
             "is_archived",
             "last_enriched_at",
@@ -384,50 +467,194 @@ class TestWorkspaceMetadataColumnTable:
         }
         missing = expected - cols.keys()
         assert not missing, (
-            f"workspace_metadata_column missing required columns: {missing}"
+            f"workspace_curation_da_table missing required columns: {missing}"
         )
 
     @pytest.mark.asyncio
-    async def test_table_fk_cascade(self, test_engine):
-        fks = await _foreign_keys(test_engine, "workspace_metadata_column")
-        t_fk = [
-            fk for fk in fks
-            if "workspace_metadata_table_id" in fk["constrained_columns"]
-        ]
-        assert t_fk and t_fk[0]["referred_table"] == "workspace_metadata_table"
-        assert _ondelete(t_fk[0]) == "CASCADE"
-
-    @pytest.mark.asyncio
-    async def test_sample_values_is_pii_tagged(self, test_engine):
-        """``sample_values`` holds admin-pulled real values from the source
-        warehouse — can contain customer PII (emails, addresses). Tag for
-        the GDPR anonymization runner so it can null these out on erasure.
+    async def test_no_fact_columns(self, test_engine):
+        """Workspace overlay must NOT duplicate tenant catalog facts —
+        ``table_name``, ``table_type``, ``native_comment``, ``row_count``
+        live on ``da_catalog_table`` and are joined for display.
         """
-        cols = await _columns(test_engine, "workspace_metadata_column")
-        comment = cols["sample_values"].get("comment") or ""
-        assert "pii:freetext" in comment, (
-            "workspace_metadata_column.sample_values must be tagged "
-            "'pii:freetext' (real values may contain customer PII)."
+        cols = await _columns(test_engine, "workspace_curation_da_table")
+        forbidden = {
+            "table_name",
+            "table_type",
+            "native_comment",
+            "row_count",
+            "last_synced_at",
+        }
+        present = forbidden & cols.keys()
+        assert not present, (
+            f"workspace_curation_da_table must not duplicate catalog facts; "
+            f"found {present}."
         )
 
     @pytest.mark.asyncio
-    async def test_uniqueness_per_table_column_name(self, test_engine):
-        indexes = await _indexes(test_engine, "workspace_metadata_column")
+    async def test_workspace_fk_cascade(self, test_engine):
+        fks = await _foreign_keys(test_engine, "workspace_curation_da_table")
+        ws_fk = [fk for fk in fks if "workspace_id" in fk["constrained_columns"]]
+        assert ws_fk and ws_fk[0]["referred_table"] == "workspace"
+        assert _ondelete(ws_fk[0]) == "CASCADE"
+
+    @pytest.mark.asyncio
+    async def test_catalog_fk_cascade(self, test_engine):
+        fks = await _foreign_keys(test_engine, "workspace_curation_da_table")
+        c_fk = [
+            fk for fk in fks
+            if "da_catalog_table_id" in fk["constrained_columns"]
+        ]
+        assert c_fk and c_fk[0]["referred_table"] == "da_catalog_table"
+        assert _ondelete(c_fk[0]) == "CASCADE", (
+            "Catalog row removal (e.g. table dropped from the warehouse) "
+            "must cascade to clean up workspace overlays — leaving them "
+            "would create dangling references."
+        )
+
+    @pytest.mark.asyncio
+    async def test_unique_per_workspace_catalog_table(self, test_engine):
+        indexes = await _indexes(test_engine, "workspace_curation_da_table")
         unique = [
             idx
             for idx in indexes
             if idx.get("unique")
             and set(idx.get("column_names") or [])
-            == {"workspace_metadata_table_id", "column_name"}
+            == {"workspace_id", "da_catalog_table_id"}
         ]
         assert unique, (
-            "Expected unique (workspace_metadata_table_id, column_name); "
+            "Expected unique (workspace_id, da_catalog_table_id) — one "
+            f"overlay row per workspace per catalog table. Got {indexes!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Table 6 — workspace_curation_da_column (DA-P1g — workspace overlay)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceCurationDAColumnTable:
+    @pytest.mark.asyncio
+    async def test_table_exists(self, test_engine):
+        assert await _table_exists(test_engine, "workspace_curation_da_column")
+
+    @pytest.mark.asyncio
+    async def test_required_columns(self, test_engine):
+        cols = await _columns(test_engine, "workspace_curation_da_column")
+        expected = {
+            "id",
+            "workspace_id",
+            "da_catalog_column_id",
+            # Per-workspace LLM context — the AI describes the same column
+            # differently for different teams (sales workspace ≠ finance
+            # workspace), so this lives per-workspace, not on the catalog.
+            "column_logical_name",
+            "admin_seed_description",
+            "ai_generated_description",
+            "synonyms",
+            "unit",
+            "format_hint",
+            "valid_aggregations",
+            "allow_sample_values",
+            "sample_values",
+            "cardinality_score",
+            "statistical_profile",
+            # Upgrade-only restricted override — a workspace can mark a
+            # column as additionally restricted, but it CANNOT downgrade
+            # the catalog's is_restricted or is_pii classification. App
+            # code enforces this; the column is a bool default false.
+            "is_restricted_override",
+            # Curation
+            "is_included",
+            "is_archived",
+            "last_enriched_at",
+            "created_at",
+            "updated_at",
+        }
+        missing = expected - cols.keys()
+        assert not missing, (
+            f"workspace_curation_da_column missing required columns: {missing}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_fact_or_classification_columns(self, test_engine):
+        """Workspace overlay must NOT duplicate facts or classifications.
+        ``is_pii`` lives ONLY at the catalog — a workspace cannot
+        disagree about PII status; that's a compliance landmine.
+        Restrictions can be UPGRADED via is_restricted_override but
+        never set as the authoritative restricted flag.
+        """
+        cols = await _columns(test_engine, "workspace_curation_da_column")
+        forbidden = {
+            "column_name",
+            "data_type",
+            "nullable",
+            "is_primary_key",
+            "is_foreign_key",
+            "foreign_key_to",
+            "native_comment",
+            "ordinal_position",
+            "last_synced_at",
+            # PII has NO override at workspace — strictly catalog-owned
+            "is_pii",
+            "is_pii_override",
+            # is_restricted is catalog-owned; workspaces use
+            # is_restricted_override (upgrade-only) instead.
+            "is_restricted",
+        }
+        present = forbidden & cols.keys()
+        assert not present, (
+            f"workspace_curation_da_column must not carry facts / "
+            f"classifications; found {present}. Compliance landmine: "
+            f"workspaces disagreeing about PII status."
+        )
+
+    @pytest.mark.asyncio
+    async def test_sample_values_is_pii_tagged(self, test_engine):
+        """``sample_values`` may hold real customer data (email, addresses)
+        pulled from the source. Tag for the C6 anonymization runner.
+        """
+        cols = await _columns(test_engine, "workspace_curation_da_column")
+        comment = cols["sample_values"].get("comment") or ""
+        assert "pii:freetext" in comment, (
+            "workspace_curation_da_column.sample_values must be tagged "
+            "'pii:freetext' (real values may contain customer PII)."
+        )
+
+    @pytest.mark.asyncio
+    async def test_workspace_fk_cascade(self, test_engine):
+        fks = await _foreign_keys(test_engine, "workspace_curation_da_column")
+        ws_fk = [fk for fk in fks if "workspace_id" in fk["constrained_columns"]]
+        assert ws_fk and ws_fk[0]["referred_table"] == "workspace"
+        assert _ondelete(ws_fk[0]) == "CASCADE"
+
+    @pytest.mark.asyncio
+    async def test_catalog_fk_cascade(self, test_engine):
+        fks = await _foreign_keys(test_engine, "workspace_curation_da_column")
+        c_fk = [
+            fk for fk in fks
+            if "da_catalog_column_id" in fk["constrained_columns"]
+        ]
+        assert c_fk and c_fk[0]["referred_table"] == "da_catalog_column"
+        assert _ondelete(c_fk[0]) == "CASCADE"
+
+    @pytest.mark.asyncio
+    async def test_unique_per_workspace_catalog_column(self, test_engine):
+        indexes = await _indexes(test_engine, "workspace_curation_da_column")
+        unique = [
+            idx
+            for idx in indexes
+            if idx.get("unique")
+            and set(idx.get("column_names") or [])
+            == {"workspace_id", "da_catalog_column_id"}
+        ]
+        assert unique, (
+            "Expected unique (workspace_id, da_catalog_column_id); "
             f"got {indexes!r}"
         )
 
 
 # ---------------------------------------------------------------------------
-# Table 5 — metric (Entity 5 in §4.8)
+# Table 7 — metric (Entity 5 in §4.8) — unchanged in DA-P1g
 # ---------------------------------------------------------------------------
 
 
@@ -469,24 +696,18 @@ class TestMetricTable:
 
     @pytest.mark.asyncio
     async def test_actor_fks_set_null(self, test_engine):
-        """``created_by`` and ``updated_by`` FK to ``user(id)`` ON DELETE
-        SET NULL — anonymization must not erase metric audit history.
-        """
         fks = await _foreign_keys(test_engine, "metric")
         for col in ("created_by", "updated_by"):
             actor_fk = [fk for fk in fks if col in fk["constrained_columns"]]
             assert actor_fk, f"metric.{col} should FK to user(id)"
             assert actor_fk[0]["referred_table"] == "user"
             assert _ondelete(actor_fk[0]) == "SET NULL", (
-                f"metric.{col} must be ON DELETE SET NULL for GDPR-safe anonymization."
+                f"metric.{col} must be ON DELETE SET NULL for GDPR-safe "
+                "anonymization."
             )
 
     @pytest.mark.asyncio
     async def test_active_name_unique_per_workspace(self, test_engine):
-        """Only one ACTIVE metric per (workspace_id, name). Archived rows
-        don't block re-creating the name — partial unique index where
-        is_archived = false.
-        """
         indexes = await _indexes(test_engine, "metric")
         unique = [
             idx
@@ -512,7 +733,8 @@ class TestMetricTable:
 
 
 # ---------------------------------------------------------------------------
-# Table 6 — join_hint (Entity 6 in §4.8)
+# Table 8 — join_hint — workspace-scoped; FKs repoint to
+# workspace_curation_da_table in DA-P1g.
 # ---------------------------------------------------------------------------
 
 
@@ -550,17 +772,27 @@ class TestJoinHintTable:
         assert _ondelete(ws_fk[0]) == "CASCADE"
 
     @pytest.mark.asyncio
-    async def test_left_right_table_fks_cascade(self, test_engine):
-        """Both side tables of the join must cascade-delete the hint — a
-        deleted table invalidates the join.
+    async def test_left_right_table_fks_to_workspace_curation(self, test_engine):
+        """Join hints are workspace opinions about which tables join
+        usefully — so they reference the workspace's curated set,
+        ``workspace_curation_da_table``, NOT the tenant catalog.
+        Cascade is required: archive a workspace's curation row → the
+        hints that reference it become meaningless.
         """
         fks = await _foreign_keys(test_engine, "join_hint")
         for col in ("left_table_id", "right_table_id"):
             t_fk = [fk for fk in fks if col in fk["constrained_columns"]]
-            assert t_fk, f"join_hint.{col} should FK to workspace_metadata_table(id)"
-            assert t_fk[0]["referred_table"] == "workspace_metadata_table"
+            assert t_fk, (
+                f"join_hint.{col} should FK to workspace_curation_da_table(id)"
+            )
+            assert t_fk[0]["referred_table"] == "workspace_curation_da_table", (
+                f"join_hint.{col} must reference workspace_curation_da_table, "
+                f"not {t_fk[0]['referred_table']}. Hints are workspace "
+                "opinions, not tenant facts."
+            )
             assert _ondelete(t_fk[0]) == "CASCADE", (
-                f"join_hint.{col} must cascade — deleted table invalidates the join."
+                f"join_hint.{col} must cascade — losing the curated table "
+                "invalidates the hint."
             )
 
     @pytest.mark.asyncio
@@ -572,7 +804,10 @@ class TestJoinHintTable:
 
 
 # ---------------------------------------------------------------------------
-# Table 7 — description_version (Entity 8 in §4.8) — append-only history
+# Table 9 — description_version (Entity 8 in §4.8) — append-only history.
+# parent_id is a polymorphic ref via the ``scope`` enum; in DA-P1g it
+# still points at the workspace-curation overlays (since descriptions are
+# per-workspace), so no structural FK change is needed.
 # ---------------------------------------------------------------------------
 
 
@@ -613,10 +848,6 @@ class TestDescriptionVersionTable:
 
     @pytest.mark.asyncio
     async def test_inputs_snapshot_is_pii_tagged(self, test_engine):
-        """``inputs_snapshot`` captures sample_values used to generate the
-        AI description (for eval replay). Sample values can contain PII;
-        tag accordingly so anonymization sweeps it.
-        """
         cols = await _columns(test_engine, "description_version")
         comment = cols["inputs_snapshot"].get("comment") or ""
         assert "pii:freetext" in comment, (
@@ -626,9 +857,6 @@ class TestDescriptionVersionTable:
 
     @pytest.mark.asyncio
     async def test_generated_by_fk_set_null(self, test_engine):
-        """``generated_by`` FK to ``user(id)`` ON DELETE SET NULL —
-        anonymization must not destroy the version history itself.
-        """
         fks = await _foreign_keys(test_engine, "description_version")
         gb_fk = [fk for fk in fks if "generated_by" in fk["constrained_columns"]]
         assert gb_fk, "description_version.generated_by should FK to user(id)"
@@ -637,9 +865,6 @@ class TestDescriptionVersionTable:
 
     @pytest.mark.asyncio
     async def test_version_number_uniqueness(self, test_engine):
-        """A description can only have one row per version number — versions
-        are auto-incremented per (scope, parent_id).
-        """
         indexes = await _indexes(test_engine, "description_version")
         unique = [
             idx

@@ -137,12 +137,24 @@ class DAConnection(_DABase):
 # ---------------------------------------------------------------------------
 
 
-class WorkspaceMetadataColumn(_DABase):
-    """Entity 4 — column-level curated metadata for one column."""
-    id: UUID
-    workspace_metadata_table_id: UUID
+# ---------------------------------------------------------------------------
+# Tenant catalog (facts) — discovered by connector-service, shared across
+# every workspace in the tenant.
+# ---------------------------------------------------------------------------
 
-    # DDL-derived (Phase 1).
+
+class DACatalogColumn(_DABase):
+    """Tenant-level column fact + compliance classification.
+
+    DDL-derived facts (name, type, nullability, PK/FK, native_comment,
+    ordinal) plus catalog-owned classification (is_pii / is_restricted).
+    Per-workspace LLM context (descriptions, synonyms, sample values)
+    lives on WorkspaceCurationDAColumn — facts up, opinions down.
+    """
+    id: UUID
+    da_catalog_table_id: UUID
+
+    # DDL-derived facts
     column_name: str
     data_type: str
     nullable: bool
@@ -152,90 +164,114 @@ class WorkspaceMetadataColumn(_DABase):
     native_comment: Optional[str] = None
     ordinal_position: int
 
-    # Logical / display
-    column_logical_name: Optional[str] = None
-
-    # Descriptions (precedence: admin_seed > ai_generated > native_comment).
-    admin_seed_description: Optional[str] = None
-    ai_generated_description: Optional[str] = None
-
-    # Privacy / access
+    # Compliance classification — tenant-owned, no workspace override
+    # for is_pii at all. is_restricted can only be upgraded via
+    # WorkspaceCurationDAColumn.is_restricted_override.
     is_pii: bool = False
     is_restricted: bool = False
-    allow_sample_values: bool = False
 
-    # Phase-2 enrichment (admin opt-in)
-    sample_values: Optional[list] = None
-    cardinality_score: Optional[float] = None
-    statistical_profile: Optional[StatisticalProfile] = None
-
-    # Semantic enrichment
-    synonyms: Optional[list[Synonym]] = None
-    unit: Optional[str] = None
-    format_hint: Optional[str] = None
-    valid_aggregations: Optional[list[str]] = None
-
-    # Curation + tracking
-    is_included: bool = False
-    is_archived: bool = False
-    last_enriched_at: Optional[datetime] = None
+    last_synced_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
 
-class WorkspaceMetadataTable(_DABase):
-    """Entity 3 — table-level curated metadata."""
+class DACatalogTable(_DABase):
+    """Tenant-level table fact within a catalog schema."""
     id: UUID
-    workspace_metadata_connection_id: UUID
+    da_catalog_schema_id: UUID
 
-    # DDL-derived (Phase 1).
     table_name: str
     table_type: DATableTypeEnum
     native_comment: Optional[str] = None
     row_count: Optional[int] = None
 
-    # Logical / display
-    table_logical_name: Optional[str] = None
-
-    # Descriptions
-    admin_seed_description: Optional[str] = None
-    ai_generated_description: Optional[str] = None
-
-    # Curation + tracking
-    is_included: bool = False
-    is_archived: bool = False
-    last_enriched_at: Optional[datetime] = None
+    last_synced_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
-    # Children + relationships (assembled by the service layer; not 1:1
-    # with the ``workspace_metadata_table`` row).
-    columns: list[WorkspaceMetadataColumn] = Field(default_factory=list)
-    join_hints_from_here: list["JoinHint"] = Field(default_factory=list)
+    # Children — assembled by the service layer when the consumer wants
+    # the hierarchical view.
+    columns: list[DACatalogColumn] = Field(default_factory=list)
 
 
-class WorkspaceMetadataConnection(_DABase):
-    """Entity 2 — workspace's curated view of one schema in one tenant
-    Connection. One row per (workspace_id, connection_id, database_name,
-    schema_name).
-    """
+class DACatalogSchema(_DABase):
+    """Tenant-level schema fact within a Connection."""
     id: UUID
-    workspace_id: UUID
-    connection_id: UUID
+    da_connection_id: UUID
 
-    # Denormalised from da_connection for display + routing.
-    source_type: DASourceTypeEnum
-    connection_name: str
-
-    database_name: str
     schema_name: str
     schema_description: Optional[str] = None
     last_synced_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
-    # Children — populated when the consumer wants the hierarchical view.
-    tables: list[WorkspaceMetadataTable] = Field(default_factory=list)
+    tables: list[DACatalogTable] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Workspace curation overlays (opinions) — layered on top of the catalog.
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceCurationDAColumn(_DABase):
+    """Workspace overlay on a catalog column.
+
+    Holds per-workspace LLM context — descriptions, synonyms, sample
+    values, valid aggregations — plus the upgrade-only
+    ``is_restricted_override``. No PII override field: PII is strictly
+    catalog-owned for compliance consistency.
+    """
+    id: UUID
+    workspace_id: UUID
+    da_catalog_column_id: UUID
+
+    # Per-workspace LLM context
+    column_logical_name: Optional[str] = None
+    admin_seed_description: Optional[str] = None
+    ai_generated_description: Optional[str] = None
+    synonyms: Optional[list[Synonym]] = None
+    unit: Optional[str] = None
+    format_hint: Optional[str] = None
+    valid_aggregations: Optional[list[str]] = None
+
+    # Phase-2 enrichment (admin opt-in)
+    allow_sample_values: bool = False
+    sample_values: Optional[list] = None
+    cardinality_score: Optional[float] = None
+    statistical_profile: Optional[StatisticalProfile] = None
+
+    # Upgrade-only restricted override
+    is_restricted_override: bool = False
+
+    # Curation
+    is_included: bool = False
+    is_archived: bool = False
+    last_enriched_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkspaceCurationDATable(_DABase):
+    """Workspace overlay on a catalog table."""
+    id: UUID
+    workspace_id: UUID
+    da_catalog_table_id: UUID
+
+    # Per-workspace opinion / context
+    table_logical_name: Optional[str] = None
+    admin_seed_description: Optional[str] = None
+    ai_generated_description: Optional[str] = None
+
+    # Curation
+    is_included: bool = False
+    is_archived: bool = False
+    last_enriched_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    # Children — assembled by the service layer.
+    columns: list[WorkspaceCurationDAColumn] = Field(default_factory=list)
+    join_hints_from_here: list["JoinHint"] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -308,26 +344,29 @@ class DescriptionVersion(_DABase):
 
 
 class WorkspaceMetadata(_DABase):
-    """Entity 1 — the root container for a workspace's full DA metadata.
+    """Root container for a workspace's full DA metadata.
 
-    Assembled by the service layer (agent-platform): one query loads all
-    workspace_metadata_connection / _table / _column rows scoped to a
-    workspace, plus its metrics and (optionally) join hints; this model
-    serializes the whole hierarchy as one JSON document via
-    ``model_dump_json()`` for T2S prompt rendering, API responses, and
-    frontend consumption.
+    Assembled by the service layer (agent-platform): joins
+    ``da_catalog_schema / table / column`` (tenant facts) with
+    ``workspace_curation_da_table / column`` (workspace opinions) for
+    the workspace in question, plus its metrics and join hints. The
+    same model is the "boundary serialization" contract from
+    data-flow.md §4.8 — used for T2S prompt rendering, API responses,
+    and frontend consumption.
 
-    Same model, three consumers — the "boundary serialization" contract
-    from data-flow.md §4.8.
+    Note that ``DACatalogSchema`` is the top-level grouping because
+    schemas are discovered facts; only the curated tables / columns
+    nested under it carry workspace opinions.
     """
     workspace_id: UUID
     workspace_name: str
     last_synced_at: Optional[datetime] = None
-    connections: list[WorkspaceMetadataConnection] = Field(default_factory=list)
+    catalog_schemas: list[DACatalogSchema] = Field(default_factory=list)
+    curated_tables: list[WorkspaceCurationDATable] = Field(default_factory=list)
     metrics: list[Metric] = Field(default_factory=list)
 
 
-# Forward-reference resolution. WorkspaceMetadataTable holds a list of
-# JoinHint, which is declared after it — rebuild so the annotation
-# resolves to the class object rather than the string.
-WorkspaceMetadataTable.model_rebuild()
+# Forward-reference resolution. WorkspaceCurationDATable holds a list of
+# JoinHint, which is declared earlier in the file as a forward reference
+# string; rebuild so the annotation resolves to the class object.
+WorkspaceCurationDATable.model_rebuild()

@@ -967,22 +967,19 @@ class DAConnection(Base):
     updated_at: Mapped[datetime]
 
 
-class WorkspaceMetadataConnection(Base):
-    """Workspace's curated view of one schema within a tenant Connection.
+class DACatalogSchema(Base):
+    """Tenant-level fact: a schema discovered in a connected warehouse.
 
-    One row per (workspace_id, connection_id, database_name, schema_name).
-    Denormalises ``source_type`` + ``connection_name`` from da_connection
-    so display + routing reads don't need a join.
+    Shared across every workspace in the tenant (the schema exists
+    regardless of who curates it). Re-synced by connector-service's
+    discovery pass; workspaces layer opinions on top via
+    workspace_curation_da_* overlays.
     """
 
-    __table__ = tables.workspace_metadata_connection
+    __table__ = tables.da_catalog_schema
 
     id: Mapped[str]
-    workspace_id: Mapped[str]
-    connection_id: Mapped[str]
-    source_type: Mapped[DASourceTypeEnum]
-    connection_name: Mapped[str]
-    database_name: Mapped[str]
+    da_connection_id: Mapped[str]
     schema_name: Mapped[str]
     schema_description: Mapped[Optional[str]]
     last_synced_at: Mapped[Optional[datetime]]
@@ -990,21 +987,68 @@ class WorkspaceMetadataConnection(Base):
     updated_at: Mapped[datetime]
 
 
-class WorkspaceMetadataTable(Base):
-    """Curated table within a workspace's curated schema.
+class DACatalogTable(Base):
+    """Tenant-level fact: a table within a catalog schema.
 
-    Holds DDL (Phase 1 light pull) + descriptions (3-source precedence:
-    admin_seed > ai_generated > native_comment) + curation flags.
+    No workspace opinion fields here — those live on
+    workspace_curation_da_table. Only DDL-derived facts (table_name,
+    table_type, native_comment, row_count).
     """
 
-    __table__ = tables.workspace_metadata_table
+    __table__ = tables.da_catalog_table
 
     id: Mapped[str]
-    workspace_metadata_connection_id: Mapped[str]
+    da_catalog_schema_id: Mapped[str]
     table_name: Mapped[str]
     table_type: Mapped[DATableTypeEnum]
     native_comment: Mapped[Optional[str]]
     row_count: Mapped[Optional[int]]
+    last_synced_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class DACatalogColumn(Base):
+    """Tenant-level fact: a column within a catalog table.
+
+    Holds DDL + compliance classification (is_pii / is_restricted).
+    Classification is shared across workspaces — same column has the
+    same PII status everywhere. Per-workspace LLM context lives on
+    workspace_curation_da_column.
+    """
+
+    __table__ = tables.da_catalog_column
+
+    id: Mapped[str]
+    da_catalog_table_id: Mapped[str]
+    column_name: Mapped[str]
+    data_type: Mapped[str]
+    nullable: Mapped[bool]
+    is_primary_key: Mapped[bool]
+    is_foreign_key: Mapped[bool]
+    foreign_key_to: Mapped[Optional[list]]
+    native_comment: Mapped[Optional[str]]
+    ordinal_position: Mapped[int]
+    is_pii: Mapped[bool]
+    is_restricted: Mapped[bool]
+    last_synced_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class WorkspaceCurationDATable(Base):
+    """Workspace's opinion layered on a catalog table.
+
+    Thin row: which catalog table this workspace exposes + per-workspace
+    descriptions / logical name. One row per
+    (workspace_id, da_catalog_table_id).
+    """
+
+    __table__ = tables.workspace_curation_da_table
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    da_catalog_table_id: Mapped[str]
     table_logical_name: Mapped[Optional[str]]
     admin_seed_description: Mapped[Optional[str]]
     ai_generated_description: Mapped[Optional[str]]
@@ -1015,40 +1059,32 @@ class WorkspaceMetadataTable(Base):
     updated_at: Mapped[datetime]
 
 
-class WorkspaceMetadataColumn(Base):
-    """Curated column within a curated table.
+class WorkspaceCurationDAColumn(Base):
+    """Workspace's opinion layered on a catalog column.
 
-    Carries DDL + descriptions + privacy flags + Phase-2 enrichments
-    (samples / cardinality / stats) + semantic fields
-    (synonyms / unit / format_hint / valid_aggregations).
-    Synonyms (Entity 7) are nested as a JSONB list on this row.
+    Holds per-workspace LLM context (descriptions, synonyms, sample
+    values, valid aggregations) plus an upgrade-only
+    ``is_restricted_override``. No PII override field — PII is strictly
+    catalog-owned for compliance consistency.
     """
 
-    __table__ = tables.workspace_metadata_column
+    __table__ = tables.workspace_curation_da_column
 
     id: Mapped[str]
-    workspace_metadata_table_id: Mapped[str]
-    column_name: Mapped[str]
-    data_type: Mapped[str]
-    nullable: Mapped[bool]
-    is_primary_key: Mapped[bool]
-    is_foreign_key: Mapped[bool]
-    foreign_key_to: Mapped[Optional[list]]
-    native_comment: Mapped[Optional[str]]
-    ordinal_position: Mapped[int]
+    workspace_id: Mapped[str]
+    da_catalog_column_id: Mapped[str]
     column_logical_name: Mapped[Optional[str]]
     admin_seed_description: Mapped[Optional[str]]
     ai_generated_description: Mapped[Optional[str]]
-    is_pii: Mapped[bool]
-    is_restricted: Mapped[bool]
-    allow_sample_values: Mapped[bool]
-    sample_values: Mapped[Optional[list]]
-    cardinality_score: Mapped[Optional[float]]
-    statistical_profile: Mapped[Optional[dict]]
     synonyms: Mapped[Optional[list]]
     unit: Mapped[Optional[str]]
     format_hint: Mapped[Optional[str]]
     valid_aggregations: Mapped[Optional[list]]
+    allow_sample_values: Mapped[bool]
+    sample_values: Mapped[Optional[list]]
+    cardinality_score: Mapped[Optional[float]]
+    statistical_profile: Mapped[Optional[dict]]
+    is_restricted_override: Mapped[bool]
     is_included: Mapped[bool]
     is_archived: Mapped[bool]
     last_enriched_at: Mapped[Optional[datetime]]

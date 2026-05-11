@@ -1504,45 +1504,28 @@ da_connection = Table(
 
 
 # ---------------------------------------------------------------------------
-# workspace_metadata_connection — Entity 2 (§4.8).
+# da_catalog_schema / da_catalog_table / da_catalog_column — tenant-level
+# facts about what's in the warehouse (DA-P1g refactor).
 #
-# One row per (workspace_id, connection_id, database_name, schema_name).
-# A workspace curating two schemas from the same warehouse → two rows.
-# Denormalises ``source_type`` and ``connection_name`` from da_connection
-# so display / routing reads don't need a join.
+# Why these are tenant-scoped, not workspace-scoped: a column either IS
+# or ISN'T PII; "users.email" has one true type regardless of which
+# workspace is looking at it. Production catalog systems (Looker, dbt,
+# Hex, Metabase) all separate the catalog (facts) from per-team curation
+# (opinions). Workspace-level enrichment lives on the
+# workspace_curation_da_* overlays below.
 # ---------------------------------------------------------------------------
 
-workspace_metadata_connection = Table(
-    "workspace_metadata_connection",
+da_catalog_schema = Table(
+    "da_catalog_schema",
     metadata,
 
     Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
     Column(
-        "workspace_id",
-        UUID(as_uuid=False),
-        ForeignKey("workspace.id", ondelete="CASCADE"),
-        nullable=False,
-    ),
-    Column(
-        "connection_id",
+        "da_connection_id",
         UUID(as_uuid=False),
         ForeignKey("da_connection.id", ondelete="CASCADE"),
         nullable=False,
     ),
-    # Denormalised — convenience for display + routing without a join.
-    Column(
-        "source_type",
-        PgEnum(
-            DASourceTypeEnum,
-            name="da_source_type",
-            values_callable=lambda enum: [e.value for e in enum],
-            create_type=False,  # type created by da_connection
-        ),
-        nullable=False,
-    ),
-    Column("connection_name", String(255), nullable=False),
-    # Warehouse catalog / GCP project / Postgres database.
-    Column("database_name", String(255), nullable=False),
     Column("schema_name", String(255), nullable=False),
     Column("schema_description", Text, nullable=True),
     Column("last_synced_at", TIMESTAMP(timezone=True), nullable=True),
@@ -1561,34 +1544,26 @@ workspace_metadata_connection = Table(
     ),
 
     Index(
-        "ux_wmc_workspace_conn_db_schema",
-        "workspace_id",
-        "connection_id",
-        "database_name",
+        "ux_da_catalog_schema_conn_name",
+        "da_connection_id",
         "schema_name",
         unique=True,
     ),
-    Index("ix_wmc_workspace", "workspace_id"),
+    Index("ix_da_catalog_schema_conn", "da_connection_id"),
 )
 
 
-# ---------------------------------------------------------------------------
-# workspace_metadata_table — Entity 3 (§4.8).
-# ---------------------------------------------------------------------------
-
-workspace_metadata_table = Table(
-    "workspace_metadata_table",
+da_catalog_table = Table(
+    "da_catalog_table",
     metadata,
 
     Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
     Column(
-        "workspace_metadata_connection_id",
+        "da_catalog_schema_id",
         UUID(as_uuid=False),
-        ForeignKey("workspace_metadata_connection.id", ondelete="CASCADE"),
+        ForeignKey("da_catalog_schema.id", ondelete="CASCADE"),
         nullable=False,
     ),
-
-    # DDL-derived (Phase 1 light pull).
     Column("table_name", String(255), nullable=False),
     Column(
         "table_type",
@@ -1596,34 +1571,14 @@ workspace_metadata_table = Table(
             DATableTypeEnum,
             name="da_table_type",
             values_callable=lambda enum: [e.value for e in enum],
+            create_type=False,
         ),
         nullable=False,
         server_default=text("'table'"),
     ),
     Column("native_comment", Text, nullable=True),
     Column("row_count", BigInteger, nullable=True),
-
-    # Logical / display
-    Column("table_logical_name", String(255), nullable=True),
-
-    # Descriptions (precedence: admin_seed > ai_generated > native_comment).
-    Column("admin_seed_description", Text, nullable=True),
-    Column("ai_generated_description", Text, nullable=True),
-
-    # Curation + tracking
-    Column(
-        "is_included",
-        Boolean,
-        nullable=False,
-        server_default=text("false"),
-    ),
-    Column(
-        "is_archived",
-        Boolean,
-        nullable=False,
-        server_default=text("false"),
-    ),
-    Column("last_enriched_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("last_synced_at", TIMESTAMP(timezone=True), nullable=True),
     Column(
         "created_at",
         TIMESTAMP(timezone=True),
@@ -1639,38 +1594,29 @@ workspace_metadata_table = Table(
     ),
 
     Index(
-        "ux_wmt_connection_table_name",
-        "workspace_metadata_connection_id",
+        "ux_da_catalog_table_schema_name",
+        "da_catalog_schema_id",
         "table_name",
         unique=True,
     ),
-    Index("ix_wmt_connection", "workspace_metadata_connection_id"),
+    Index("ix_da_catalog_table_schema", "da_catalog_schema_id"),
 )
 
 
-# ---------------------------------------------------------------------------
-# workspace_metadata_column — Entity 4 (§4.8).
-#
-# Synonyms (Entity 7) live as a JSONB list on this table; each element is
-# ``{term, source, accepted}``. Light churn → JSONB is fine; per-item HITL
-# is still expressible via the ``source`` + ``accepted`` keys per entry.
-# ---------------------------------------------------------------------------
-
-workspace_metadata_column = Table(
-    "workspace_metadata_column",
+da_catalog_column = Table(
+    "da_catalog_column",
     metadata,
 
     Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
     Column(
-        "workspace_metadata_table_id",
+        "da_catalog_table_id",
         UUID(as_uuid=False),
-        ForeignKey("workspace_metadata_table.id", ondelete="CASCADE"),
+        ForeignKey("da_catalog_table.id", ondelete="CASCADE"),
         nullable=False,
     ),
 
-    # DDL-derived (Phase 1).
+    # DDL-derived facts
     Column("column_name", String(255), nullable=False),
-    # Warehouse-native type string (VARCHAR(36), NUMERIC(12,2), etc.).
     Column("data_type", String(255), nullable=False),
     Column("nullable", Boolean, nullable=False),
     Column(
@@ -1690,14 +1636,9 @@ workspace_metadata_column = Table(
     Column("native_comment", Text, nullable=True),
     Column("ordinal_position", Integer, nullable=False),
 
-    # Logical / display
-    Column("column_logical_name", String(255), nullable=True),
-
-    # Descriptions
-    Column("admin_seed_description", Text, nullable=True),
-    Column("ai_generated_description", Text, nullable=True),
-
-    # Privacy / access
+    # Compliance classification — tenant-owned, no workspace override
+    # for is_pii at all; is_restricted can only be upgraded by workspace
+    # via workspace_curation_da_column.is_restricted_override.
     Column(
         "is_pii",
         Boolean,
@@ -1710,33 +1651,68 @@ workspace_metadata_column = Table(
         nullable=False,
         server_default=text("false"),
     ),
+
+    Column("last_synced_at", TIMESTAMP(timezone=True), nullable=True),
     Column(
-        "allow_sample_values",
-        Boolean,
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
         nullable=False,
-        server_default=text("false"),
     ),
-
-    # Phase-2 enrichment (admin opt-in). sample_values can hold real PII
-    # values from the warehouse — tagged so the C6 anonymization runner
-    # nulls these out on user erasure (downstream tooling will gate by
-    # workspace, not user, but the tag still flags it as sensitive).
     Column(
-        "sample_values",
-        JSONB,
-        nullable=True,
-        comment="pii:freetext",
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     ),
-    Column("cardinality_score", Float, nullable=True),
-    Column("statistical_profile", JSONB, nullable=True),
 
-    # Semantic enrichment
-    Column("synonyms", JSONB, nullable=True),
-    Column("unit", String(64), nullable=True),
-    Column("format_hint", String(64), nullable=True),
-    Column("valid_aggregations", JSONB, nullable=True),
+    Index(
+        "ux_da_catalog_column_table_name",
+        "da_catalog_table_id",
+        "column_name",
+        unique=True,
+    ),
+    Index("ix_da_catalog_column_table", "da_catalog_table_id"),
+)
 
-    # Curation + tracking
+
+# ---------------------------------------------------------------------------
+# workspace_curation_da_table / workspace_curation_da_column — workspace
+# opinion overlays on top of the tenant catalog (DA-P1g refactor).
+#
+# Thin rows: "this workspace exposes this catalog row to its users",
+# plus per-workspace AI / admin descriptions, synonyms, sample values,
+# etc. The same column can be described differently for different teams
+# (sales workspace ≠ finance workspace), so enrichment lives here.
+# Compliance classification (is_pii / is_restricted) lives on the
+# catalog — a workspace cannot disagree about PII status.
+# ---------------------------------------------------------------------------
+
+workspace_curation_da_table = Table(
+    "workspace_curation_da_table",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "da_catalog_table_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_catalog_table.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+
+    # Per-workspace opinion / context
+    Column("table_logical_name", String(255), nullable=True),
+    Column("admin_seed_description", Text, nullable=True),
+    Column("ai_generated_description", Text, nullable=True),
+
+    # Curation
     Column(
         "is_included",
         Boolean,
@@ -1765,12 +1741,105 @@ workspace_metadata_column = Table(
     ),
 
     Index(
-        "ux_wmcol_table_column_name",
-        "workspace_metadata_table_id",
-        "column_name",
+        "ux_wcdt_workspace_catalog",
+        "workspace_id",
+        "da_catalog_table_id",
         unique=True,
     ),
-    Index("ix_wmcol_table", "workspace_metadata_table_id"),
+    Index("ix_wcdt_workspace", "workspace_id"),
+    Index("ix_wcdt_catalog", "da_catalog_table_id"),
+)
+
+
+workspace_curation_da_column = Table(
+    "workspace_curation_da_column",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "da_catalog_column_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_catalog_column.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+
+    # Per-workspace LLM context
+    Column("column_logical_name", String(255), nullable=True),
+    Column("admin_seed_description", Text, nullable=True),
+    Column("ai_generated_description", Text, nullable=True),
+    Column("synonyms", JSONB, nullable=True),
+    Column("unit", String(64), nullable=True),
+    Column("format_hint", String(64), nullable=True),
+    Column("valid_aggregations", JSONB, nullable=True),
+
+    # Phase-2 enrichment (admin opt-in). sample_values can hold real PII
+    # from the warehouse — tagged so the C6 anonymization runner can
+    # null these on user erasure.
+    Column(
+        "allow_sample_values",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "sample_values",
+        JSONB,
+        nullable=True,
+        comment="pii:freetext",
+    ),
+    Column("cardinality_score", Float, nullable=True),
+    Column("statistical_profile", JSONB, nullable=True),
+
+    # Upgrade-only restricted override (compliance posture).
+    Column(
+        "is_restricted_override",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+
+    # Curation
+    Column(
+        "is_included",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "is_archived",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column("last_enriched_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    Index(
+        "ux_wcdc_workspace_catalog",
+        "workspace_id",
+        "da_catalog_column_id",
+        unique=True,
+    ),
+    Index("ix_wcdc_workspace", "workspace_id"),
+    Index("ix_wcdc_catalog", "da_catalog_column_id"),
 )
 
 
@@ -1883,7 +1952,7 @@ join_hint = Table(
     Column(
         "left_table_id",
         UUID(as_uuid=False),
-        ForeignKey("workspace_metadata_table.id", ondelete="CASCADE"),
+        ForeignKey("workspace_curation_da_table.id", ondelete="CASCADE"),
         nullable=False,
     ),
     # JSONB list[str] — composite join keys supported (e.g. ["tenant_id", "user_id"]).
@@ -1891,7 +1960,7 @@ join_hint = Table(
     Column(
         "right_table_id",
         UUID(as_uuid=False),
-        ForeignKey("workspace_metadata_table.id", ondelete="CASCADE"),
+        ForeignKey("workspace_curation_da_table.id", ondelete="CASCADE"),
         nullable=False,
     ),
     Column("right_columns", JSONB, nullable=False),
