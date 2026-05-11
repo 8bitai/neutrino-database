@@ -1528,6 +1528,20 @@ da_catalog_schema = Table(
     ),
     Column("schema_name", String(255), nullable=False),
     Column("schema_description", Text, nullable=True),
+    # Compliance classification — see DA-P1i.3. Schema-level tags
+    # propagate to every table + column inside (effective-at-read).
+    Column(
+        "is_pii",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "is_restricted",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
     Column("last_synced_at", TIMESTAMP(timezone=True), nullable=True),
     Column(
         "created_at",
@@ -1578,6 +1592,20 @@ da_catalog_table = Table(
     ),
     Column("native_comment", Text, nullable=True),
     Column("row_count", BigInteger, nullable=True),
+    # Table-level compliance classification — see DA-P1i.3. Propagates
+    # to every column in this table (effective-at-read).
+    Column(
+        "is_pii",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "is_restricted",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
     Column("last_synced_at", TIMESTAMP(timezone=True), nullable=True),
     Column(
         "created_at",

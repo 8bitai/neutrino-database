@@ -176,7 +176,13 @@ class DACatalogColumn(_DABase):
 
 
 class DACatalogTable(_DABase):
-    """Tenant-level table fact within a catalog schema."""
+    """Tenant-level table fact within a catalog schema.
+
+    Carries the table-level half of hierarchical classification
+    (DA-P1i.3): when ``is_pii`` or ``is_restricted`` is true, every
+    column in this table is effectively classified regardless of
+    column-level flags.
+    """
     id: UUID
     da_catalog_schema_id: UUID
 
@@ -184,6 +190,8 @@ class DACatalogTable(_DABase):
     table_type: DATableTypeEnum
     native_comment: Optional[str] = None
     row_count: Optional[int] = None
+    is_pii: bool = False
+    is_restricted: bool = False
 
     last_synced_at: Optional[datetime] = None
     created_at: datetime
@@ -195,12 +203,19 @@ class DACatalogTable(_DABase):
 
 
 class DACatalogSchema(_DABase):
-    """Tenant-level schema fact within a Connection."""
+    """Tenant-level schema fact within a Connection.
+
+    Carries the schema-level half of hierarchical classification
+    (DA-P1i.3): when ``is_pii`` or ``is_restricted`` is true, every
+    table + column inside is effectively classified.
+    """
     id: UUID
     da_connection_id: UUID
 
     schema_name: str
     schema_description: Optional[str] = None
+    is_pii: bool = False
+    is_restricted: bool = False
     last_synced_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
