@@ -1,6 +1,14 @@
 from neutrino_database.models.credentials.api_keys import providers
 from neutrino_database.models.enums import (
     AgentMessageRole,
+    DAConnectionStatusEnum,
+    DADescriptionScopeEnum,
+    DADescriptionSourceEnum,
+    DAJoinHintSourceEnum,
+    DAJoinTypeEnum,
+    DAMetricSourceEnum,
+    DASourceTypeEnum,
+    DATableTypeEnum,
     ExcelDatasetStatus,
     IdpProviderEnum,
     KeyStatusEnum,
@@ -923,3 +931,200 @@ class TenancyOwnershipTransfer(Base):
     accepted_at: Mapped[Optional[datetime]]
     cancelled_at: Mapped[Optional[datetime]]
     created_at: Mapped[datetime]
+
+
+# ===========================================================================
+# Data Analytics — ORM wrappers (NEU-1811 DA-P0).
+#
+# Seven tables encoding the DA pillar's per-warehouse curated state. See
+# tables.py for the canonical schema and the inline service-ownership
+# comment block (feature.md F4). Pydantic boundary models live alongside
+# in da_schemas.py — these ORM classes are for SQLAlchemy session use
+# (filters, inserts, joins) inside connector-service and agent-platform.
+# ===========================================================================
+
+
+class DAConnection(Base):
+    """Tenant-level DA Connection — one row per tenant warehouse credential.
+
+    Lifecycle CRUD owned by connector-service (feature.md F4). agent-platform
+    reads it to know which connection to call when running metadata sync /
+    SQL execution against the warehouse.
+    """
+
+    __table__ = tables.da_connection
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    source_type: Mapped[DASourceTypeEnum]
+    connection_name: Mapped[str]
+    credentials: Mapped[dict]  # KMS-wrapped JSONB
+    status: Mapped[DAConnectionStatusEnum]
+    created_by: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class WorkspaceMetadataConnection(Base):
+    """Workspace's curated view of one schema within a tenant Connection.
+
+    One row per (workspace_id, connection_id, database_name, schema_name).
+    Denormalises ``source_type`` + ``connection_name`` from da_connection
+    so display + routing reads don't need a join.
+    """
+
+    __table__ = tables.workspace_metadata_connection
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    connection_id: Mapped[str]
+    source_type: Mapped[DASourceTypeEnum]
+    connection_name: Mapped[str]
+    database_name: Mapped[str]
+    schema_name: Mapped[str]
+    schema_description: Mapped[Optional[str]]
+    last_synced_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class WorkspaceMetadataTable(Base):
+    """Curated table within a workspace's curated schema.
+
+    Holds DDL (Phase 1 light pull) + descriptions (3-source precedence:
+    admin_seed > ai_generated > native_comment) + curation flags.
+    """
+
+    __table__ = tables.workspace_metadata_table
+
+    id: Mapped[str]
+    workspace_metadata_connection_id: Mapped[str]
+    table_name: Mapped[str]
+    table_type: Mapped[DATableTypeEnum]
+    native_comment: Mapped[Optional[str]]
+    row_count: Mapped[Optional[int]]
+    table_logical_name: Mapped[Optional[str]]
+    admin_seed_description: Mapped[Optional[str]]
+    ai_generated_description: Mapped[Optional[str]]
+    is_included: Mapped[bool]
+    is_archived: Mapped[bool]
+    last_enriched_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class WorkspaceMetadataColumn(Base):
+    """Curated column within a curated table.
+
+    Carries DDL + descriptions + privacy flags + Phase-2 enrichments
+    (samples / cardinality / stats) + semantic fields
+    (synonyms / unit / format_hint / valid_aggregations).
+    Synonyms (Entity 7) are nested as a JSONB list on this row.
+    """
+
+    __table__ = tables.workspace_metadata_column
+
+    id: Mapped[str]
+    workspace_metadata_table_id: Mapped[str]
+    column_name: Mapped[str]
+    data_type: Mapped[str]
+    nullable: Mapped[bool]
+    is_primary_key: Mapped[bool]
+    is_foreign_key: Mapped[bool]
+    foreign_key_to: Mapped[Optional[list]]
+    native_comment: Mapped[Optional[str]]
+    ordinal_position: Mapped[int]
+    column_logical_name: Mapped[Optional[str]]
+    admin_seed_description: Mapped[Optional[str]]
+    ai_generated_description: Mapped[Optional[str]]
+    is_pii: Mapped[bool]
+    is_restricted: Mapped[bool]
+    allow_sample_values: Mapped[bool]
+    sample_values: Mapped[Optional[list]]
+    cardinality_score: Mapped[Optional[float]]
+    statistical_profile: Mapped[Optional[dict]]
+    synonyms: Mapped[Optional[list]]
+    unit: Mapped[Optional[str]]
+    format_hint: Mapped[Optional[str]]
+    valid_aggregations: Mapped[Optional[list]]
+    is_included: Mapped[bool]
+    is_archived: Mapped[bool]
+    last_enriched_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class Metric(Base):
+    """Workspace-scoped business metric.
+
+    HITL lifecycle: AI suggestions land with ``accepted=false`` until an
+    admin accepts. Partial unique on (workspace_id, name) WHERE not
+    archived — archiving a metric frees its name for reuse.
+    """
+
+    __table__ = tables.metric
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    name: Mapped[str]
+    description: Mapped[Optional[str]]
+    sql_expression: Mapped[str]
+    filters: Mapped[Optional[str]]
+    applicable_tables: Mapped[list]
+    valid_dimensions: Mapped[Optional[list]]
+    source: Mapped[DAMetricSourceEnum]
+    accepted: Mapped[bool]
+    created_by: Mapped[Optional[str]]
+    updated_by: Mapped[Optional[str]]
+    last_used_at: Mapped[Optional[datetime]]
+    is_archived: Mapped[bool]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class JoinHint(Base):
+    """Workspace-scoped join hint between two curated tables.
+
+    Cascades when either side table is removed (the hint becomes
+    meaningless). HITL: AI-suggested hints land with ``accepted=false``.
+    """
+
+    __table__ = tables.join_hint
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    left_table_id: Mapped[str]
+    left_columns: Mapped[list]
+    right_table_id: Mapped[str]
+    right_columns: Mapped[list]
+    join_type: Mapped[DAJoinTypeEnum]
+    semantic_description: Mapped[Optional[str]]
+    source: Mapped[DAJoinHintSourceEnum]
+    accepted: Mapped[bool]
+    created_by: Mapped[Optional[str]]
+    is_archived: Mapped[bool]
+    created_at: Mapped[datetime]
+
+
+class DescriptionVersion(Base):
+    """Append-only version history for descriptions across 4 scopes.
+
+    Soft-FK pattern: ``parent_id`` points at one of
+    ``workspace_metadata_table`` / ``workspace_metadata_column`` /
+    ``metric`` / ``join_hint`` — discriminated by ``scope``. Service layer
+    enforces parent_id matches the scope.
+
+    No ``updated_at`` — corrections are new versions, not in-place edits.
+    """
+
+    __table__ = tables.description_version
+
+    id: Mapped[str]
+    scope: Mapped[DADescriptionScopeEnum]
+    parent_id: Mapped[str]
+    version_number: Mapped[int]
+    source: Mapped[DADescriptionSourceEnum]
+    content: Mapped[str]
+    generated_at: Mapped[datetime]
+    generated_by: Mapped[Optional[str]]
+    inputs_snapshot: Mapped[Optional[dict]]
