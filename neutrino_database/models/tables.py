@@ -1631,6 +1631,30 @@ da_catalog_table = Table(
 )
 
 
+# ---------------------------------------------------------------------------
+# da_catalog_column — TWO-WRITER row with documented column ownership.
+#
+# Multiple services write to this row on different columns; this is the
+# fine pattern (each column has a single owner). See
+# `product-feature-roadmap/data-analytics/description-generation.md`
+# discussion log 2026-05-12 — "Classification stays in connector-service".
+#
+# Column ownership:
+#
+#   * Sync (connector-service.ConnectionService.sync_catalog):
+#       column_name, data_type, nullable, is_primary_key, is_foreign_key,
+#       foreign_key_to, native_comment, ordinal_position, last_synced_at,
+#       created_at, updated_at
+#
+#   * Classification (connector-service.ConnectionService
+#     .patch_catalog_column_classification):
+#       is_pii, is_restricted
+#
+# Hard invariant: sync's UPDATE branch MUST NOT touch is_pii / is_restricted
+# (would race against classification). Sync writes are upserts that
+# preserve classification state on existing rows.
+# ---------------------------------------------------------------------------
+
 da_catalog_column = Table(
     "da_catalog_column",
     metadata,
