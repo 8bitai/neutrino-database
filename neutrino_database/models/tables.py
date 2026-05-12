@@ -1810,14 +1810,18 @@ workspace_curation_da_column = Table(
     Column("format_hint", String(64), nullable=True),
     Column("valid_aggregations", JSONB, nullable=True),
 
-    # Phase-2 enrichment (admin opt-in). sample_values can hold real PII
-    # from the warehouse — tagged so the C6 anonymization runner can
-    # null these on user erasure.
+    # Phase-2 enrichment. DA-P1l flipped server_default to true (see
+    # migration a4b5c6d7e8f9): tenant compliance gate already blocks
+    # PII / Restricted from any profile exposure, so workspace admin
+    # gets full visibility on cleared columns by default. Workspace
+    # opts OUT per column from the detail page. sample_values can
+    # hold real PII from the warehouse — tagged so the C6
+    # anonymization runner can null these on user erasure.
     Column(
         "allow_sample_values",
         Boolean,
         nullable=False,
-        server_default=text("false"),
+        server_default=text("true"),
     ),
     Column(
         "sample_values",
