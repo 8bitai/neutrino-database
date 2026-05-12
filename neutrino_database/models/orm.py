@@ -1056,6 +1056,7 @@ class WorkspaceCurationDATable(Base):
     table_logical_name: Mapped[Optional[str]]
     admin_seed_description: Mapped[Optional[str]]
     ai_generated_description: Mapped[Optional[str]]
+    synonyms: Mapped[Optional[list]]
     is_included: Mapped[bool]
     is_archived: Mapped[bool]
     last_enriched_at: Mapped[Optional[datetime]]

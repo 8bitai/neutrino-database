@@ -1739,6 +1739,10 @@ workspace_curation_da_table = Table(
     Column("table_logical_name", String(255), nullable=True),
     Column("admin_seed_description", Text, nullable=True),
     Column("ai_generated_description", Text, nullable=True),
+    # DA-P1k.1 — workspace-scoped alt names; same shape as the
+    # equivalent ``workspace_curation_da_column.synonyms``. NULL =
+    # not set; empty list semantically equivalent.
+    Column("synonyms", JSONB, nullable=True),
 
     # Curation
     Column(
