@@ -1000,6 +1000,59 @@ underwriting_pipeline_results = Table(
 )
 
 
+dashboard = Table(
+    "dashboard",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+    Column("created_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+    Column("title", String(255), nullable=False),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+    Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
+
+    Index("ix_dashboard_tenant_workspace", "tenant_id", "workspace_id"),
+    Index("ix_dashboard_workspace_created_by", "workspace_id", "created_by"),
+    Index("ix_dashboard_workspace_updated_at", "workspace_id", "updated_at"),
+)
+
+
+dashboard_component = Table(
+    "dashboard_component",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column("dashboard_id", UUID(as_uuid=False), ForeignKey("dashboard.id", ondelete="CASCADE"), nullable=False),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+
+    # SQL re-execution context. The original chart was rendered against this
+    # connector + schema; we re-run the same SQL on dashboard load to refresh
+    # the data.
+    Column("connector_name", String(255), nullable=False),
+    Column("schema_name", String(255), nullable=True),
+    Column("sql", Text, nullable=False),
+
+    # The user's natural-language question — kept for display / debugging.
+    Column("original_query", Text, nullable=True),
+
+    # How the live data should be rendered.
+    Column("chart_type", String(64), nullable=False),
+    # Persisted output of /visualization/predict (x_axis, chart_title,
+    # chart_description, chart_insight, formatted x-axis pre-format if any).
+    Column("chart_params", JSONB, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+    Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
+
+    Index("ix_dashboard_component_dashboard", "dashboard_id"),
+    Index("ix_dashboard_component_workspace", "workspace_id"),
+)
+
+
 underwriting_rules = Table(
     "underwriting_rules",
     metadata,

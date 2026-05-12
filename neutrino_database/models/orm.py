@@ -426,6 +426,7 @@ class Chat(Base):
         back_populates="chats"
     )
 
+
     messages: Mapped[List["Message"]] = relationship(
         "Message",
         back_populates="chat",
@@ -550,6 +551,7 @@ class Workspace(Base):
         back_populates="workspace",
         cascade="all, delete-orphan"
     )
+
 
 
 class WorkspaceMember(Base):
@@ -862,3 +864,50 @@ class Provider(Base):  # ← Singular, not Providers
         foreign_keys="Provider.created_by",  # ← Changed from LLMProvider
         back_populates="created_providers"  # ← Changed from created_llm_providers
     )
+
+
+class Dashboard(Base):
+    """ORM wrapper for the dashboard table — a named collection of pinned charts.
+
+    Scoped to a (tenant, workspace) pair. ``workspace_id`` is required so a
+    dashboard always lives inside exactly one workspace and a user only sees
+    dashboards belonging to the workspace they're currently viewing.
+    """
+    __table__ = tables.dashboard
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    workspace_id: Mapped[str]
+    created_by: Mapped[Optional[str]]
+    title: Mapped[str]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+    deleted_at: Mapped[Optional[datetime]]
+
+
+class DashboardComponent(Base):
+    """ORM wrapper for the dashboard_component table — a single pinned chart.
+
+    Stores everything needed to re-execute the SQL and render the chart on
+    dashboard load: the connector + schema + raw SQL, plus the chart-render
+    parameters (chart_type, x_axis, title, description, insight) so we don't
+    re-call the LLM enrichment on every refresh.
+
+    Carries its own ``workspace_id`` (denormalised from the parent
+    dashboard) so we can scope by workspace without joining.
+    """
+    __table__ = tables.dashboard_component
+
+    id: Mapped[str]
+    dashboard_id: Mapped[str]
+    tenant_id: Mapped[str]
+    workspace_id: Mapped[str]
+    connector_name: Mapped[str]
+    schema_name: Mapped[Optional[str]]
+    sql: Mapped[str]
+    original_query: Mapped[Optional[str]]
+    chart_type: Mapped[str]
+    chart_params: Mapped[Optional[dict]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+    deleted_at: Mapped[Optional[datetime]]
