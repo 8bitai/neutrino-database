@@ -1044,8 +1044,8 @@ class WorkspaceCurationDATable(Base):
     """Workspace's opinion layered on a catalog table.
 
     Thin row: which catalog table this workspace exposes + per-workspace
-    descriptions / logical name. One row per
-    (workspace_id, da_catalog_table_id).
+    ``description`` (single field, two editors — see description-generation.md
+    §M1) + trust metadata. One row per (workspace_id, da_catalog_table_id).
     """
 
     __table__ = tables.workspace_curation_da_table
@@ -1054,9 +1054,11 @@ class WorkspaceCurationDATable(Base):
     workspace_id: Mapped[str]
     da_catalog_table_id: Mapped[str]
     table_logical_name: Mapped[Optional[str]]
-    admin_seed_description: Mapped[Optional[str]]
-    ai_generated_description: Mapped[Optional[str]]
+    description: Mapped[Optional[str]]
     synonyms: Mapped[Optional[list]]
+    description_origin: Mapped[str]
+    ai_accepted_at: Mapped[Optional[datetime]]
+    ai_last_generated_at: Mapped[Optional[datetime]]
     is_included: Mapped[bool]
     is_archived: Mapped[bool]
     last_enriched_at: Mapped[Optional[datetime]]
@@ -1067,10 +1069,10 @@ class WorkspaceCurationDATable(Base):
 class WorkspaceCurationDAColumn(Base):
     """Workspace's opinion layered on a catalog column.
 
-    Holds per-workspace LLM context (descriptions, synonyms, sample
-    values, valid aggregations) plus an upgrade-only
-    ``is_restricted_override``. No PII override field — PII is strictly
-    catalog-owned for compliance consistency.
+    Holds per-workspace LLM context (single ``description`` field + trust
+    metadata, synonyms, sample values, valid aggregations) plus an
+    upgrade-only ``is_restricted_override``. No PII override field — PII
+    is strictly catalog-owned for compliance consistency.
     """
 
     __table__ = tables.workspace_curation_da_column
@@ -1079,13 +1081,14 @@ class WorkspaceCurationDAColumn(Base):
     workspace_id: Mapped[str]
     da_catalog_column_id: Mapped[str]
     column_logical_name: Mapped[Optional[str]]
-    admin_seed_description: Mapped[Optional[str]]
-    ai_generated_description: Mapped[Optional[str]]
+    description: Mapped[Optional[str]]
     synonyms: Mapped[Optional[list]]
     unit: Mapped[Optional[str]]
     format_hint: Mapped[Optional[str]]
     valid_aggregations: Mapped[Optional[list]]
-    allow_sample_values: Mapped[bool]
+    description_origin: Mapped[str]
+    ai_accepted_at: Mapped[Optional[datetime]]
+    ai_last_generated_at: Mapped[Optional[datetime]]
     sample_values: Mapped[Optional[list]]
     cardinality_score: Mapped[Optional[float]]
     statistical_profile: Mapped[Optional[dict]]
@@ -1093,6 +1096,26 @@ class WorkspaceCurationDAColumn(Base):
     is_included: Mapped[bool]
     is_archived: Mapped[bool]
     last_enriched_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class WorkspaceDASettings(Base):
+    """Workspace-level Data Analytics settings (DA-P1l.1.0).
+
+    One row per workspace, lazy-created on first PATCH. Holds toggles
+    that govern AI description generation behaviour — see M11 in
+    ``product-feature-roadmap/data-analytics/description-generation.md``.
+
+    Future DA workspace settings (default model preference, cost cap,
+    etc.) land here rather than as JSONB sprawl on the workspace row.
+    """
+
+    __table__ = tables.workspace_da_settings
+
+    workspace_id: Mapped[str]
+    da_include_sample_values: Mapped[bool]
+    da_pii_redaction_enabled: Mapped[bool]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 

@@ -231,26 +231,37 @@ class DACatalogSchema(_DABase):
 class WorkspaceCurationDAColumn(_DABase):
     """Workspace overlay on a catalog column.
 
-    Holds per-workspace LLM context — descriptions, synonyms, sample
-    values, valid aggregations — plus the upgrade-only
-    ``is_restricted_override``. No PII override field: PII is strictly
-    catalog-owned for compliance consistency.
+    Holds per-workspace LLM context — single ``description`` field + trust
+    metadata, synonyms, sample values, valid aggregations — plus the
+    upgrade-only ``is_restricted_override``. No PII override field: PII
+    is strictly catalog-owned for compliance consistency.
+
+    DA-P1l.1.0: replaces the two-field model (admin_seed_description +
+    ai_generated_description) with a single field + origin / accept
+    trust metadata. See description-generation.md §M1, M2.
     """
     id: UUID
     workspace_id: UUID
     da_catalog_column_id: UUID
 
-    # Per-workspace LLM context
+    # Per-workspace LLM context — single description field
     column_logical_name: Optional[str] = None
-    admin_seed_description: Optional[str] = None
-    ai_generated_description: Optional[str] = None
+    description: Optional[str] = None
     synonyms: Optional[list[Synonym]] = None
     unit: Optional[str] = None
     format_hint: Optional[str] = None
     valid_aggregations: Optional[list[str]] = None
 
-    # Phase-2 enrichment (admin opt-in)
-    allow_sample_values: bool = False
+    # Trust metadata (M2). description_origin is 'human' | 'ai'.
+    # ai_accepted_at is set only when an ai-origin description has been
+    # accepted by the admin — chat reads ai-origin descriptions only
+    # when this is non-null.
+    description_origin: str = "human"
+    ai_accepted_at: Optional[datetime] = None
+    ai_last_generated_at: Optional[datetime] = None
+
+    # Phase-2 enrichment (sample values + stats). The sampling toggle
+    # itself is workspace-level in workspace_da_settings (M11).
     sample_values: Optional[list] = None
     cardinality_score: Optional[float] = None
     statistical_profile: Optional[StatisticalProfile] = None
@@ -267,15 +278,23 @@ class WorkspaceCurationDAColumn(_DABase):
 
 
 class WorkspaceCurationDATable(_DABase):
-    """Workspace overlay on a catalog table."""
+    """Workspace overlay on a catalog table.
+
+    DA-P1l.1.0: single ``description`` field + trust metadata; see
+    ``WorkspaceCurationDAColumn`` for the same shape.
+    """
     id: UUID
     workspace_id: UUID
     da_catalog_table_id: UUID
 
-    # Per-workspace opinion / context
+    # Per-workspace opinion / context — single description field
     table_logical_name: Optional[str] = None
-    admin_seed_description: Optional[str] = None
-    ai_generated_description: Optional[str] = None
+    description: Optional[str] = None
+
+    # Trust metadata (M2)
+    description_origin: str = "human"
+    ai_accepted_at: Optional[datetime] = None
+    ai_last_generated_at: Optional[datetime] = None
 
     # Curation
     is_included: bool = False
@@ -287,6 +306,26 @@ class WorkspaceCurationDATable(_DABase):
     # Children — assembled by the service layer.
     columns: list[WorkspaceCurationDAColumn] = Field(default_factory=list)
     join_hints_from_here: list["JoinHint"] = Field(default_factory=list)
+
+
+class WorkspaceDASettings(_DABase):
+    """Workspace-level Data Analytics settings (DA-P1l.1.0, M11).
+
+    One row per workspace, lazy-created on first PATCH. Holds the two
+    AI description-generation toggles today; future DA workspace settings
+    accumulate here.
+
+    Both toggles default TRUE (fail-safe). Admin opts down deliberately
+    via the workspace settings UI.
+    """
+    workspace_id: UUID
+
+    # M11 toggles
+    da_include_sample_values: bool = True
+    da_pii_redaction_enabled: bool = True
+
+    created_at: datetime
+    updated_at: datetime
 
 
 # ---------------------------------------------------------------------------

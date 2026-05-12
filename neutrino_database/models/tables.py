@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Table, Column, Integer, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
-    UniqueConstraint, Numeric, DDL, event
+    UniqueConstraint, Numeric, DDL, event, CheckConstraint
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, INET
 from sqlalchemy.sql import func, text
@@ -1735,14 +1735,31 @@ workspace_curation_da_table = Table(
         nullable=False,
     ),
 
-    # Per-workspace opinion / context
+    # Per-workspace opinion / context.
+    #
+    # DA-P1l.1.0 collapsed the two-field model (admin_seed_description +
+    # ai_generated_description) into a single ``description`` field with
+    # trust metadata below. See description-generation.md §M1, M2.
     Column("table_logical_name", String(255), nullable=True),
-    Column("admin_seed_description", Text, nullable=True),
-    Column("ai_generated_description", Text, nullable=True),
+    Column("description", Text, nullable=True),
     # DA-P1k.1 — workspace-scoped alt names; same shape as the
     # equivalent ``workspace_curation_da_column.synonyms``. NULL =
     # not set; empty list semantically equivalent.
     Column("synonyms", JSONB, nullable=True),
+
+    # Trust metadata (M2). origin records who wrote the current
+    # description text — 'human' or 'ai'. Admin edits flip it to 'human'
+    # and clear ai_accepted_at; Generate / Regenerate flip it to 'ai'
+    # and stamp ai_last_generated_at. ai_accepted_at is the HITL gate:
+    # chat (T2S) trusts an ai-origin description only when this is set.
+    Column(
+        "description_origin",
+        String(8),
+        nullable=False,
+        server_default=text("'human'"),
+    ),
+    Column("ai_accepted_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("ai_last_generated_at", TIMESTAMP(timezone=True), nullable=True),
 
     # Curation
     Column(
@@ -1772,6 +1789,10 @@ workspace_curation_da_table = Table(
         nullable=False,
     ),
 
+    CheckConstraint(
+        "description_origin IN ('human', 'ai')",
+        name="ck_wcdt_description_origin",
+    ),
     Index(
         "ux_wcdt_workspace_catalog",
         "workspace_id",
@@ -1801,28 +1822,34 @@ workspace_curation_da_column = Table(
         nullable=False,
     ),
 
-    # Per-workspace LLM context
+    # Per-workspace LLM context.
+    #
+    # DA-P1l.1.0 collapsed the two-field model into a single ``description``
+    # field with trust metadata below. See description-generation.md §M1, M2.
     Column("column_logical_name", String(255), nullable=True),
-    Column("admin_seed_description", Text, nullable=True),
-    Column("ai_generated_description", Text, nullable=True),
+    Column("description", Text, nullable=True),
     Column("synonyms", JSONB, nullable=True),
     Column("unit", String(64), nullable=True),
     Column("format_hint", String(64), nullable=True),
     Column("valid_aggregations", JSONB, nullable=True),
 
-    # Phase-2 enrichment. DA-P1l flipped server_default to true (see
-    # migration a4b5c6d7e8f9): tenant compliance gate already blocks
-    # PII / Restricted from any profile exposure, so workspace admin
-    # gets full visibility on cleared columns by default. Workspace
-    # opts OUT per column from the detail page. sample_values can
-    # hold real PII from the warehouse — tagged so the C6
-    # anonymization runner can null these on user erasure.
+    # Trust metadata (M2). Same semantics as workspace_curation_da_table.
     Column(
-        "allow_sample_values",
-        Boolean,
+        "description_origin",
+        String(8),
         nullable=False,
-        server_default=text("true"),
+        server_default=text("'human'"),
     ),
+    Column("ai_accepted_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("ai_last_generated_at", TIMESTAMP(timezone=True), nullable=True),
+
+    # Phase-2 enrichment. DA-P1l.1.0 lifted the sampling toggle to the
+    # workspace level (workspace_da_settings.da_include_sample_values)
+    # per M11 — per-column was redundant because catalog flags
+    # (PII / Restricted) already hard-block sampling and is_included
+    # already controls whether the column is curated at all.
+    # sample_values can hold real PII from the warehouse — tagged so the
+    # C6 anonymization runner can null these on user erasure.
     Column(
         "sample_values",
         JSONB,
@@ -1868,6 +1895,10 @@ workspace_curation_da_column = Table(
         nullable=False,
     ),
 
+    CheckConstraint(
+        "description_origin IN ('human', 'ai')",
+        name="ck_wcdc_description_origin",
+    ),
     Index(
         "ux_wcdc_workspace_catalog",
         "workspace_id",
@@ -1876,6 +1907,69 @@ workspace_curation_da_column = Table(
     ),
     Index("ix_wcdc_workspace", "workspace_id"),
     Index("ix_wcdc_catalog", "da_catalog_column_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# workspace_da_settings — workspace-level DA settings (DA-P1l.1.0).
+#
+# Holds workspace-level toggles that govern AI description generation
+# behaviour. See M11 in product-feature-roadmap/data-analytics/
+# description-generation.md. One row per workspace, PK == FK to
+# workspace(id). Row is lazy-created on first PATCH; absence means
+# defaults apply.
+#
+# Future DA workspace settings (default model preference, cost cap,
+# etc.) land here rather than as JSONB sprawl on the workspace row.
+# ---------------------------------------------------------------------------
+
+workspace_da_settings = Table(
+    "workspace_da_settings",
+    metadata,
+
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+
+    # M11 toggles. Both default TRUE (fail-safe).
+    #
+    # da_include_sample_values: whether the TOP VALUES block appears in
+    # column prompts. PII/Restricted columns are skipped regardless
+    # (catalog hard-gate, M10).
+    #
+    # da_pii_redaction_enabled: whether to wrap LLM calls in GovernedLLM
+    # (PII pattern redaction in-flight). Reduces description quality
+    # when on — recommended only if workspace's LLM provider isn't a
+    # trusted private tenant.
+    Column(
+        "da_include_sample_values",
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    ),
+    Column(
+        "da_pii_redaction_enabled",
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    ),
+
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
 )
 
 

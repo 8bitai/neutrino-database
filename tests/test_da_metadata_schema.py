@@ -292,16 +292,23 @@ class TestDACatalogTableTable:
     @pytest.mark.asyncio
     async def test_no_workspace_or_curation_columns(self, test_engine):
         """Tenant catalog must NOT carry workspace-level opinions —
-        ``is_included``, ``admin_seed_description``,
-        ``ai_generated_description``, ``table_logical_name``, and
-        ``last_enriched_at`` all belong on ``workspace_curation_da_table``.
-        Mixing them here recreates the original anti-pattern.
+        per-workspace descriptions / trust metadata / curation state
+        all belong on ``workspace_curation_da_table``. Mixing them here
+        recreates the original anti-pattern.
         """
         cols = await _columns(test_engine, "da_catalog_table")
         forbidden = {
             "workspace_id",
             "is_included",
             "is_archived",
+            # Single-field description + trust metadata (DA-P1l.1.0) is
+            # workspace-only — catalog never carries it.
+            "description",
+            "description_origin",
+            "ai_accepted_at",
+            "ai_last_generated_at",
+            # Legacy two-field model (pre-DA-P1l.1.0) also forbidden —
+            # defense against a future migration reintroducing it.
             "admin_seed_description",
             "ai_generated_description",
             "table_logical_name",
@@ -383,8 +390,8 @@ class TestDACatalogColumnTable:
     @pytest.mark.asyncio
     async def test_no_workspace_or_enrichment_columns(self, test_engine):
         """Tenant catalog must NOT carry workspace-level enrichment —
-        AI descriptions, synonyms, sample values, valid_aggregations,
-        column_logical_name, admin_seed_description all belong on
+        descriptions / trust metadata / synonyms / sample values /
+        valid_aggregations / column_logical_name all belong on
         ``workspace_curation_da_column``.
         """
         cols = await _columns(test_engine, "da_catalog_column")
@@ -392,6 +399,13 @@ class TestDACatalogColumnTable:
             "workspace_id",
             "is_included",
             "is_archived",
+            # Single-field description + trust metadata (DA-P1l.1.0).
+            "description",
+            "description_origin",
+            "ai_accepted_at",
+            "ai_last_generated_at",
+            # Legacy two-field model (pre-DA-P1l.1.0) also forbidden —
+            # defense against a future migration reintroducing it.
             "admin_seed_description",
             "ai_generated_description",
             "column_logical_name",
@@ -449,15 +463,24 @@ class TestWorkspaceCurationDATableTable:
 
     @pytest.mark.asyncio
     async def test_required_columns(self, test_engine):
+        """DA-P1l.1.0 collapses the two-field model (admin_seed_description
+        + ai_generated_description) into a single ``description`` field
+        with trust metadata (origin / ai_accepted_at / ai_last_generated_at).
+        See ``description-generation.md`` §M1, M2 for the locked design.
+        """
         cols = await _columns(test_engine, "workspace_curation_da_table")
         expected = {
             "id",
             "workspace_id",
             "da_catalog_table_id",
-            # Per-workspace opinion / context
+            # Per-workspace opinion / context — single description field
             "table_logical_name",
-            "admin_seed_description",
-            "ai_generated_description",
+            "description",
+            "synonyms",
+            # Trust metadata (M2) — origin + HITL accept gate + last-gen stamp
+            "description_origin",
+            "ai_accepted_at",
+            "ai_last_generated_at",
             # Curation
             "is_included",
             "is_archived",
@@ -468,6 +491,37 @@ class TestWorkspaceCurationDATableTable:
         missing = expected - cols.keys()
         assert not missing, (
             f"workspace_curation_da_table missing required columns: {missing}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_two_field_description_model_removed(self, test_engine):
+        """DA-P1l.1.0 — the old two-field description model
+        (admin_seed_description + ai_generated_description) is replaced by a
+        single ``description`` field plus trust metadata. Both old columns
+        must be gone or the migration didn't run.
+        """
+        cols = await _columns(test_engine, "workspace_curation_da_table")
+        forbidden = {"admin_seed_description", "ai_generated_description"}
+        present = forbidden & cols.keys()
+        assert not present, (
+            f"workspace_curation_da_table still has legacy two-field "
+            f"description columns: {present}. Expected single ``description`` "
+            "field after DA-P1l.1.0 migration."
+        )
+
+    @pytest.mark.asyncio
+    async def test_description_origin_default_is_human(self, test_engine):
+        """Newly-inserted rows default to origin='human' — a fresh row is
+        the admin's substrate to type into; AI flips it on generate."""
+        cols = await _columns(test_engine, "workspace_curation_da_table")
+        col = cols.get("description_origin")
+        assert col is not None
+        default = (col.get("default") or "").lower()
+        assert "human" in default, (
+            f"description_origin default must encode 'human'; got {col.get('default')!r}"
+        )
+        assert col["nullable"] is False, (
+            "description_origin is NOT NULL — every row has a defined origin."
         )
 
     @pytest.mark.asyncio
@@ -539,6 +593,11 @@ class TestWorkspaceCurationDAColumnTable:
 
     @pytest.mark.asyncio
     async def test_required_columns(self, test_engine):
+        """DA-P1l.1.0 collapses the two-field model into a single
+        ``description`` field with trust metadata, and removes the
+        per-column ``allow_sample_values`` toggle (lifted to workspace-level
+        in ``workspace_da_settings`` per M11).
+        """
         cols = await _columns(test_engine, "workspace_curation_da_column")
         expected = {
             "id",
@@ -548,13 +607,17 @@ class TestWorkspaceCurationDAColumnTable:
             # differently for different teams (sales workspace ≠ finance
             # workspace), so this lives per-workspace, not on the catalog.
             "column_logical_name",
-            "admin_seed_description",
-            "ai_generated_description",
+            "description",
             "synonyms",
             "unit",
             "format_hint",
             "valid_aggregations",
-            "allow_sample_values",
+            # Trust metadata (M2)
+            "description_origin",
+            "ai_accepted_at",
+            "ai_last_generated_at",
+            # Phase-2 enrichment (sample values + stats; sampling toggle
+            # itself is now workspace-level in workspace_da_settings)
             "sample_values",
             "cardinality_score",
             "statistical_profile",
@@ -574,6 +637,47 @@ class TestWorkspaceCurationDAColumnTable:
         assert not missing, (
             f"workspace_curation_da_column missing required columns: {missing}"
         )
+
+    @pytest.mark.asyncio
+    async def test_two_field_description_model_removed(self, test_engine):
+        """DA-P1l.1.0 — same collapse as workspace_curation_da_table.
+        Single ``description`` field + trust metadata; legacy two-field
+        columns gone.
+        """
+        cols = await _columns(test_engine, "workspace_curation_da_column")
+        forbidden = {"admin_seed_description", "ai_generated_description"}
+        present = forbidden & cols.keys()
+        assert not present, (
+            f"workspace_curation_da_column still has legacy two-field "
+            f"description columns: {present}."
+        )
+
+    @pytest.mark.asyncio
+    async def test_per_column_allow_sample_values_removed(self, test_engine):
+        """DA-P1l.1.0 — per-column ``allow_sample_values`` toggle lifted to
+        workspace-level (workspace_da_settings.da_include_sample_values).
+        Per M11 / discussion log: per-column was redundant because
+        catalog flags (PII / Restricted) hard-block, is_included controls
+        whether the column is curated at all, and the remaining case (a
+        non-PII curated column the admin wants sample-excluded) is rare
+        enough to handle via tagging rather than its own toggle.
+        """
+        cols = await _columns(test_engine, "workspace_curation_da_column")
+        assert "allow_sample_values" not in cols, (
+            "workspace_curation_da_column.allow_sample_values must be "
+            "dropped — sampling is workspace-level now."
+        )
+
+    @pytest.mark.asyncio
+    async def test_description_origin_default_is_human(self, test_engine):
+        cols = await _columns(test_engine, "workspace_curation_da_column")
+        col = cols.get("description_origin")
+        assert col is not None
+        default = (col.get("default") or "").lower()
+        assert "human" in default, (
+            f"description_origin default must encode 'human'; got {col.get('default')!r}"
+        )
+        assert col["nullable"] is False
 
     @pytest.mark.asyncio
     async def test_no_fact_or_classification_columns(self, test_engine):
@@ -804,7 +908,88 @@ class TestJoinHintTable:
 
 
 # ---------------------------------------------------------------------------
-# Table 9 — description_version (Entity 8 in §4.8) — append-only history.
+# Table 9 — workspace_da_settings (DA-P1l.1.0 — workspace-level DA settings).
+#
+# Companion to the description-generation work: holds workspace-level
+# toggles that govern AI description gen behaviour (see M11 in
+# ``product-feature-roadmap/data-analytics/description-generation.md``).
+# Today it carries two fields (sample-value inclusion + PII redaction);
+# future DA workspace-level settings (default model preference,
+# cost cap, etc.) will land here rather than as JSONB sprawl on the
+# workspace row.
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceDASettingsTable:
+    @pytest.mark.asyncio
+    async def test_table_exists(self, test_engine):
+        assert await _table_exists(test_engine, "workspace_da_settings"), (
+            "workspace_da_settings must exist — holds workspace-level DA "
+            "settings (M11)."
+        )
+
+    @pytest.mark.asyncio
+    async def test_required_columns(self, test_engine):
+        cols = await _columns(test_engine, "workspace_da_settings")
+        expected = {
+            "workspace_id",                # PK + FK to workspace
+            "da_include_sample_values",    # M11 toggle 1
+            "da_pii_redaction_enabled",    # M11 toggle 2
+            "created_at",
+            "updated_at",
+        }
+        missing = expected - cols.keys()
+        assert not missing, (
+            f"workspace_da_settings missing required columns: {missing}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_workspace_id_is_primary_key(self, test_engine):
+        """One settings row per workspace — workspace_id is both the PK
+        and the FK to ``workspace(id)``. Avoids needing a synthetic id.
+        """
+        async with test_engine.connect() as conn:
+            pk = await conn.run_sync(
+                lambda sync_conn: sa.inspect(sync_conn).get_pk_constraint(
+                    "workspace_da_settings"
+                )
+            )
+        assert pk["constrained_columns"] == ["workspace_id"], (
+            f"workspace_da_settings PK must be (workspace_id); got {pk}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_workspace_fk_cascade(self, test_engine):
+        """Workspace deletion cascades to settings — no orphan rows."""
+        fks = await _foreign_keys(test_engine, "workspace_da_settings")
+        ws_fk = [
+            fk for fk in fks if "workspace_id" in fk["constrained_columns"]
+        ]
+        assert ws_fk and ws_fk[0]["referred_table"] == "workspace"
+        assert _ondelete(ws_fk[0]) == "CASCADE", (
+            "Deleting a workspace must cascade to its DA settings row."
+        )
+
+    @pytest.mark.asyncio
+    async def test_defaults_are_safe(self, test_engine):
+        """Both toggles default to TRUE — fail-safe posture per M11.
+        Sample values flow (better descriptions) and PII redaction is on
+        (no raw values reach the LLM provider unless admin explicitly
+        opts out). Admin trades quality vs trust deliberately.
+        """
+        cols = await _columns(test_engine, "workspace_da_settings")
+        for name in ("da_include_sample_values", "da_pii_redaction_enabled"):
+            col = cols.get(name)
+            assert col is not None
+            assert col["nullable"] is False, f"{name} must be NOT NULL"
+            default = str(col.get("default") or "").lower()
+            assert "true" in default, (
+                f"{name} default must be TRUE (fail-safe); got {col.get('default')!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Table 10 — description_version (Entity 8 in §4.8) — append-only history.
 # parent_id is a polymorphic ref via the ``scope`` enum; in DA-P1g it
 # still points at the workspace-curation overlays (since descriptions are
 # per-workspace), so no structural FK change is needed.
