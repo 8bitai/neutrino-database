@@ -401,13 +401,21 @@ class TestDashboardLinkTokenTable:
 
     @pytest.mark.asyncio
     async def test_required_columns(self, test_engine):
+        # DA-P3.4 reshape: ``token`` (plaintext) → ``token_hash`` +
+        # ``token_short``; ``revoked_by_user_id`` added. The
+        # token-hash storage / token-short / revoker-audit invariants
+        # have dedicated tests in test_dashboard_share_links_schema.py;
+        # this presence check just keeps the high-level column roster
+        # in sync.
         cols = await _columns(test_engine, "dashboard_link_token")
         expected = {
             "id",
             "dashboard_id",
-            "token",
+            "token_hash",
+            "token_short",
             "expires_at",
             "revoked_at",
+            "revoked_by_user_id",
             "created_by",
             "accessed_count",
             "created_at",
@@ -415,23 +423,6 @@ class TestDashboardLinkTokenTable:
         missing = expected - set(cols)
         assert not missing, (
             f"dashboard_link_token columns missing: {missing}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_token_unique_index(self, test_engine):
-        # Token lookup is the hot path on the public /shared/{token}
-        # viewer route — unique + indexed is non-negotiable.
-        indexes = await _indexes(test_engine, "dashboard_link_token")
-        token_idx = next(
-            (i for i in indexes if i["column_names"] == ["token"]), None
-        )
-        assert token_idx is not None, (
-            "dashboard_link_token.token needs an index for public viewer "
-            "lookup"
-        )
-        assert token_idx.get("unique") is True, (
-            "dashboard_link_token.token must be UNIQUE — collisions break "
-            "the anonymous viewer route"
         )
 
     @pytest.mark.asyncio

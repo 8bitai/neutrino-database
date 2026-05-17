@@ -536,15 +536,69 @@ class DashboardWithWidgets(_DABase):
 
 
 class DashboardLinkToken(_DABase):
-    """Shareable URL token row. Service layer exposes the minted token
-    only on create; subsequent fetches return metadata + a truncated /
-    hashed reference (token itself is the secret).
+    """Canonical row shape for ``dashboard_link_token`` (DA-P3.4).
+
+    Internal use only — services that read this know the storage
+    contract: ``token_hash`` is SHA-256(plaintext-token) hex-encoded,
+    ``token_short`` is the first 8 chars of the plaintext for UI
+    identification. **Do not return this model directly from public
+    endpoints** — use ``DashboardLinkTokenResponse`` (no hash leak)
+    or ``DashboardLinkTokenMintResponse`` (carries the plaintext
+    exactly once, only from the mint endpoint).
     """
     id: UUID
     dashboard_id: UUID
-    token: str
+    token_hash: str
+    token_short: str
     expires_at: Optional[datetime] = None
     revoked_at: Optional[datetime] = None
+    revoked_by_user_id: Optional[UUID] = None
     created_by: Optional[UUID] = None
     accessed_count: int = 0
     created_at: datetime
+
+
+class DashboardLinkTokenResponse(_DABase):
+    """Boundary DTO for the share dialog's "list active links" view.
+
+    Carries only non-secret fields: ``id``, ``token_short`` (for human
+    identification), lifecycle timestamps, creator, view counter. Never
+    leaks ``token_hash`` (the at-rest hash, useless to clients but
+    still credential-shaped) and never leaks the plaintext (only the
+    mint response holds that).
+    """
+    id: UUID
+    dashboard_id: UUID
+    token_short: str
+    expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    revoked_by_user_id: Optional[UUID] = None
+    created_by: Optional[UUID] = None
+    accessed_count: int = 0
+    created_at: datetime
+
+
+class DashboardLinkTokenMintRequest(_DABase):
+    """Curator's mint request.
+
+    ``expires_at`` is optional (None = no expiry — recipient can view
+    until the link is explicitly revoked). The share dialog surfaces a
+    picker (None / 7d / 30d / 90d / Custom); explicit picker choice
+    raises compliance posture without forcing every link to expire.
+    """
+    expires_at: Optional[datetime] = None
+
+
+class DashboardLinkTokenMintResponse(_DABase):
+    """One-shot mint response — the plaintext ``token`` materialises
+    here and only here.
+
+    The FE shows it to the curator once (with copy-to-clipboard); a
+    page refresh later returns ``DashboardLinkTokenResponse`` without
+    it. Same UX pattern as Stripe API key creation + GitHub PAT
+    creation. Wrap the row metadata + the share URL so the FE doesn't
+    have to reconstruct the URL from the token.
+    """
+    link: DashboardLinkTokenResponse
+    token: str
+    share_url: str

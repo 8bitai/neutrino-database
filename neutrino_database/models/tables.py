@@ -2470,12 +2470,31 @@ dashboard_link_token = Table(
         ForeignKey("dashboard.id", ondelete="CASCADE"),
         nullable=False,
     ),
-    # Cryptographically random opaque token — 32+ bytes URL-safe-base64
-    # minted at the service layer. UNIQUE-indexed for the
-    # /shared/{token} viewer path.
-    Column("token", String(128), nullable=False),
+    # SHA-256 of the URL-safe token, hex-encoded (64 chars). The
+    # plaintext token materialises exactly once — in the response of
+    # the mint endpoint. From there on the DB only ever sees the hash;
+    # a DB read can confirm a presented token matches a stored row
+    # but cannot reconstruct the token. Same pattern Stripe / GitHub
+    # PATs use for API credential storage at rest.
+    Column("token_hash", String(64), nullable=False),
+    # First 8 chars of the URL-safe plaintext, kept in the clear for
+    # human identification in the share dialog ("link · xK4f2nM9").
+    # 8 chars of url-safe base64 ≈ 48 bits of identifier entropy —
+    # plenty for distinguishing a curator's own links, and gives away
+    # nothing usable about the full secret. Same idea as GitHub PAT
+    # list views showing ``ghp_xxxxXXXX``.
+    Column("token_short", String(12), nullable=False),
     Column("expires_at", TIMESTAMP(timezone=True), nullable=True),
     Column("revoked_at", TIMESTAMP(timezone=True), nullable=True),
+    # WHO revoked it. NULL = un-revoked, or system-initiated revoke
+    # (future bg-job sweeper). SET NULL on user delete so the audit
+    # fact (this link was revoked at T) outlives the actor.
+    Column(
+        "revoked_by_user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     Column(
         "created_by",
         UUID(as_uuid=False),
@@ -2497,13 +2516,43 @@ dashboard_link_token = Table(
         nullable=False,
     ),
 
-    # Public viewer lookup — must be UNIQUE; collisions would route
-    # one token to another dashboard.
+    # Temporal invariants. Cheap CHECK constraints that turn a class
+    # of service-bug ("we wrote an already-expired row") into a
+    # DB-level constraint error — production-grade defense-in-depth.
+    CheckConstraint(
+        "expires_at IS NULL OR expires_at > created_at",
+        name="ck_dashboard_link_token_expires_after_created",
+    ),
+    CheckConstraint(
+        "revoked_at IS NULL OR revoked_at >= created_at",
+        name="ck_dashboard_link_token_revoked_after_created",
+    ),
+
+    # Public viewer lookup — UNIQUE on the HASH. Hash collisions for
+    # SHA-256 are cryptographically improbable, but UNIQUE makes the
+    # invariant explicit at the schema level and the resolve path
+    # depends on it (single-row read on hash match).
     Index(
-        "ux_dashboard_link_token_token",
-        "token",
+        "ux_dashboard_link_token_token_hash",
+        "token_hash",
         unique=True,
     ),
-    # Admin's share dialog: "list tokens for this dashboard".
-    Index("ix_dashboard_link_token_dashboard", "dashboard_id"),
+    # Active-link partial index. The query that powers the Library's
+    # "Shared · N" pill JOIN is:
+    #
+    #     ... WHERE revoked_at IS NULL
+    #             AND (expires_at IS NULL OR expires_at > now())
+    #
+    # Postgres won't accept ``now()`` (STABLE, not IMMUTABLE) inside
+    # an index predicate, so the index filters on the immutable half
+    # only (``revoked_at IS NULL``) and the query layer applies the
+    # ``expires_at`` residual at scan time. Standard share-link
+    # pattern — Stripe API keys + GitHub PATs index this way.
+    # Replaces the v1 ``ix_dashboard_link_token_dashboard`` which
+    # covered every row including revoked ones.
+    Index(
+        "ix_dashboard_link_token_active",
+        "dashboard_id",
+        postgresql_where=text("revoked_at IS NULL"),
+    ),
 )

@@ -1263,18 +1263,23 @@ class DashboardWidget(Base):
 
 
 class DashboardLinkToken(Base):
-    """Anonymous shareable URL token for one dashboard. Expire-able,
-    revocable, audited via ``accessed_count``. Public /shared/{token}
-    viewer reads this row.
+    """Anonymous shareable URL token for one dashboard. Production-grade
+    shape (DA-P3.4): the URL-safe plaintext token materialises exactly
+    once (in the mint response); the DB stores SHA-256 of it in
+    ``token_hash`` plus a non-secret ``token_short`` prefix for UI
+    identification. ``revoked_at`` / ``revoked_by_user_id`` close the
+    audit trail.
     """
 
     __table__ = tables.dashboard_link_token
 
     id: Mapped[str]
     dashboard_id: Mapped[str]
-    token: Mapped[str]
+    token_hash: Mapped[str]
+    token_short: Mapped[str]
     expires_at: Mapped[Optional[datetime]]
     revoked_at: Mapped[Optional[datetime]]
+    revoked_by_user_id: Mapped[Optional[str]]
     created_by: Mapped[Optional[str]]
     accessed_count: Mapped[int]
     created_at: Mapped[datetime]
