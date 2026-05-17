@@ -46,6 +46,9 @@ from neutrino_database.models.enums import (
     DAMetricSourceEnum,
     DASourceTypeEnum,
     DATableTypeEnum,
+    DashboardStatusEnum,
+    DashboardVisibilityEnum,
+    DashboardWidgetTypeEnum,
 )
 
 
@@ -424,3 +427,124 @@ class WorkspaceMetadata(_DABase):
 # JoinHint, which is declared earlier in the file as a forward reference
 # string; rebuild so the annotation resolves to the class object.
 WorkspaceCurationDATable.model_rebuild()
+
+
+# ---------------------------------------------------------------------------
+# Dashboards (NEU-1811 DA-P3.1). The authored-surface layer above the
+# DA catalog. Workspace-scoped; Draft / Published lifecycle; widgets
+# compose freely across the workspace's enabled schemas.
+# ---------------------------------------------------------------------------
+
+
+class DashboardWidgetPosition(_DABase):
+    """12-col grid position for one widget on a dashboard canvas.
+
+    x ∈ [0, 12); w ∈ [1, 12]; y unbounded above; h ∈ [1, 12]. Service
+    layer validates ranges + non-overlap. Defaults in the schema
+    correspond to a 4×2 tile at the top-left.
+    """
+    x: int = 0
+    y: int = 0
+    w: int = 4
+    h: int = 2
+
+
+class DashboardWidgetDataBinding(_DABase):
+    """How a widget gets its data — inline SQL (Q2 locked in DA-P3
+    design). `query_ref_id` is reserved for the future saved-query
+    indirection (TD-DASH-SAVED-QUERIES-1); when set, ``sql`` is
+    derived from it instead of stored verbatim.
+    """
+    connection_id: UUID
+    schema_name: str
+    sql: str
+    # Optional bind params for parameterised widgets (e.g. filter UI).
+    params: Optional[dict] = None
+    query_ref_id: Optional[UUID] = None
+
+
+class DashboardWidgetVizSpec(_DABase):
+    """Chart-shape spec mirrored on the FE renderer. Free-form-ish
+    (kept as dict-like since chart types have diverging shapes), but
+    a few canonical fields are first-class.
+    """
+    chart_type: Optional[str] = None
+    x_axis: Optional[str] = None
+    y_axis: Optional[str] = None
+    series: Optional[str] = None
+    format: Optional[dict] = None
+    extras: Optional[dict] = None
+
+
+class DashboardWidgetGrounding(_DABase):
+    """Provenance the build agent records when proposing a widget —
+    surfaces on the dashboard's trust footer + library card.
+    """
+    tables: list[str] = Field(default_factory=list)
+    columns: list[str] = Field(default_factory=list)
+    curator: Optional[str] = None
+    last_validated_at: Optional[datetime] = None
+
+
+class DashboardWidget(_DABase):
+    """A single widget on a dashboard."""
+    id: UUID
+    dashboard_id: UUID
+    position_x: int
+    position_y: int
+    position_w: int
+    position_h: int
+    widget_type: DashboardWidgetTypeEnum
+    title: str
+    description: Optional[str] = None
+    data_binding: dict
+    viz_spec: dict
+    grounding_metadata: Optional[dict] = None
+    created_by_message_id: Optional[UUID] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class Dashboard(_DABase):
+    """Workspace-scoped authored dashboard. Drafts in the Library are
+    these rows with ``status='draft'``; Published are flipped.
+    """
+    id: UUID
+    tenant_id: UUID
+    workspace_id: UUID
+    slug: str
+    name: str
+    description: Optional[str] = None
+    status: DashboardStatusEnum
+    visibility: DashboardVisibilityEnum
+    # The build chat that authored this dashboard (1:1). May be NULL
+    # if the chat row was compliance-purged independently.
+    build_chat_id: Optional[UUID] = None
+    owner_id: Optional[UUID] = None
+    created_by: Optional[UUID] = None
+    published_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DashboardWithWidgets(_DABase):
+    """Render-time payload — dashboard + its widgets in one fetch.
+    Used by the FE editor + viewer + public link viewer.
+    """
+    dashboard: Dashboard
+    widgets: list[DashboardWidget] = Field(default_factory=list)
+
+
+class DashboardLinkToken(_DABase):
+    """Shareable URL token row. Service layer exposes the minted token
+    only on create; subsequent fetches return metadata + a truncated /
+    hashed reference (token itself is the secret).
+    """
+    id: UUID
+    dashboard_id: UUID
+    token: str
+    expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    created_by: Optional[UUID] = None
+    accessed_count: int = 0
+    created_at: datetime

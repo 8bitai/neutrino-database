@@ -270,3 +270,68 @@ class DADescriptionSourceEnum(str, Enum):
     AI_GENERATED = "ai_generated"
     AI_SUGGESTED = "ai_suggested"
     ADMIN_EDITED = "admin_edited"
+
+
+# ---------------------------------------------------------------------------
+# Dashboards (NEU-1811 DA-P3.1). Workspace-scoped authored surfaces
+# built via the build chat. Draft/Published lifecycle + workspace /
+# restricted / link-only visibility + per-widget data binding.
+# ---------------------------------------------------------------------------
+
+
+class DashboardStatusEnum(str, Enum):
+    """Lifecycle status of a saved dashboard.
+
+    draft     — work in progress, visible only to workspace admins
+                in the Library's Drafts section.
+    published — finalised, visible to every workspace member per
+                the visibility flag.
+    """
+    DRAFT = "draft"
+    PUBLISHED = "published"
+
+
+class DashboardVisibilityEnum(str, Enum):
+    """Audience scope for a published dashboard.
+
+    workspace_members — every member of the workspace can view (default
+                        for published dashboards).
+    restricted        — explicit member / group allowlist via
+                        dashboard_share rows. (v2; the table doesn't
+                        ship in DA-P3.1 — TD-DASH-INTERNAL-SHARE-1.)
+    link_only         — unlisted; only a link-token holder can view.
+                        No workspace-member access by default.
+    """
+    WORKSPACE_MEMBERS = "workspace_members"
+    RESTRICTED = "restricted"
+    LINK_ONLY = "link_only"
+
+
+class DashboardWidgetTypeEnum(str, Enum):
+    """v1 widget catalog — what the canvas grid can render.
+
+    Each maps 1:1 to a visualization renderer in
+    components/visualizations on the FE side.
+    """
+    KPI_TILE = "kpi_tile"
+    LINE_CHART = "line_chart"
+    BAR_CHART = "bar_chart"
+    STACKED_BAR = "stacked_bar"
+    PIE_CHART = "pie_chart"
+    DONUT_CHART = "donut_chart"
+    TABLE = "table"
+    TEXT = "text"
+
+
+class ChatKindEnum(str, Enum):
+    """What a chat thread is for (D6).
+
+    ad_hoc          — the day-to-day Q&A chat surface. The default.
+    dashboard_build — admin's build conversation with the dashboard
+                      agent. One row per dashboard, set when the
+                      dashboard is created. Drafts in the Library
+                      are these chats.
+    """
+    AD_HOC = "ad_hoc"
+    DASHBOARD_BUILD = "dashboard_build"
+

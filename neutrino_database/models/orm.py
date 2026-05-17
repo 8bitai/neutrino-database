@@ -1,6 +1,7 @@
 from neutrino_database.models.credentials.api_keys import providers
 from neutrino_database.models.enums import (
     AgentMessageRole,
+    ChatKindEnum,
     DAConnectionStatusEnum,
     DADescriptionScopeEnum,
     DADescriptionSourceEnum,
@@ -9,6 +10,9 @@ from neutrino_database.models.enums import (
     DAMetricSourceEnum,
     DASourceTypeEnum,
     DATableTypeEnum,
+    DashboardStatusEnum,
+    DashboardVisibilityEnum,
+    DashboardWidgetTypeEnum,
     ExcelDatasetStatus,
     IdpProviderEnum,
     KeyStatusEnum,
@@ -425,6 +429,12 @@ class Chat(Base):
     title: Mapped[Optional[str]]
     incognito: Mapped[bool]
     pinned: Mapped[bool]
+    # D6 — chat thread kind. ``ad_hoc`` (default) for Q&A;
+    # ``dashboard_build`` for build conversations linked to a Dashboard.
+    kind: Mapped[ChatKindEnum]
+    # 1:1 back-pointer to the Dashboard this chat is building. NULL
+    # for ad_hoc chats; CASCADE on dashboard delete.
+    dashboard_id: Mapped[Optional[str]]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
     deleted_at: Mapped[Optional[datetime]]
@@ -1194,3 +1204,77 @@ class DescriptionVersion(Base):
     generated_at: Mapped[datetime]
     generated_by: Mapped[Optional[str]]
     inputs_snapshot: Mapped[Optional[dict]]
+
+
+# ---------------------------------------------------------------------------
+# Dashboards (NEU-1811 DA-P3.1).
+# ---------------------------------------------------------------------------
+
+
+class Dashboard(Base):
+    """Workspace-scoped authored dashboard. Draft / Published lifecycle;
+    workspace_members / restricted / link_only visibility. 1:1 build
+    chat (``build_chat_id`` → chat where kind=dashboard_build). Widgets
+    composed across every schema the workspace has DA-enabled.
+    """
+
+    __table__ = tables.dashboard
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    workspace_id: Mapped[str]
+    slug: Mapped[str]
+    name: Mapped[str]
+    description: Mapped[Optional[str]]
+    status: Mapped[DashboardStatusEnum]
+    visibility: Mapped[DashboardVisibilityEnum]
+    build_chat_id: Mapped[Optional[str]]
+    owner_id: Mapped[Optional[str]]
+    created_by: Mapped[Optional[str]]
+    published_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class DashboardWidget(Base):
+    """A single widget on a dashboard. 12-col grid position
+    (x/y/w/h). Inline SQL data binding (Q2 lock in design). viz_spec
+    + grounding_metadata carry the chart shape + provenance the build
+    agent recorded when proposing this widget.
+    """
+
+    __table__ = tables.dashboard_widget
+
+    id: Mapped[str]
+    dashboard_id: Mapped[str]
+    position_x: Mapped[int]
+    position_y: Mapped[int]
+    position_w: Mapped[int]
+    position_h: Mapped[int]
+    widget_type: Mapped[DashboardWidgetTypeEnum]
+    title: Mapped[str]
+    description: Mapped[Optional[str]]
+    data_binding: Mapped[dict]
+    viz_spec: Mapped[dict]
+    grounding_metadata: Mapped[Optional[dict]]
+    created_by_message_id: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class DashboardLinkToken(Base):
+    """Anonymous shareable URL token for one dashboard. Expire-able,
+    revocable, audited via ``accessed_count``. Public /shared/{token}
+    viewer reads this row.
+    """
+
+    __table__ = tables.dashboard_link_token
+
+    id: Mapped[str]
+    dashboard_id: Mapped[str]
+    token: Mapped[str]
+    expires_at: Mapped[Optional[datetime]]
+    revoked_at: Mapped[Optional[datetime]]
+    created_by: Mapped[Optional[str]]
+    accessed_count: Mapped[int]
+    created_at: Mapped[datetime]

@@ -10,6 +10,7 @@ from neutrino_database.models.base import metadata
 from neutrino_database.models.enums import (
     AgentMessageRole,
     AllowedModuleEnum,
+    ChatKindEnum,
     ConnectionStatus,
     DAConnectionStatusEnum,
     DADescriptionScopeEnum,
@@ -19,6 +20,9 @@ from neutrino_database.models.enums import (
     DAMetricSourceEnum,
     DASourceTypeEnum,
     DATableTypeEnum,
+    DashboardStatusEnum,
+    DashboardVisibilityEnum,
+    DashboardWidgetTypeEnum,
     ExcelDatasetStatus,
     FileProcessingStatusEnum,
     IdpProviderEnum,
@@ -638,6 +642,31 @@ chat = Table(
     Column("title", String(255), nullable=True),
     Column("incognito", Boolean, nullable=False, server_default=text("false")),
     Column("pinned", Boolean, nullable=False, server_default=text("false")),
+    # D6 — what this chat is for. ``ad_hoc`` (default) is the day-to-
+    # day Q&A chat surface. ``dashboard_build`` flags this row as the
+    # build conversation behind one Dashboard (linked via the
+    # ``dashboard.build_chat_id`` FK back-pointer). Drafts in the
+    # Library are these chats.
+    Column(
+        "kind",
+        PgEnum(
+            ChatKindEnum,
+            name="chat_kind",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'ad_hoc'"),
+    ),
+    # Back-pointer to the dashboard this chat is building. NULL for
+    # ad_hoc chats. CASCADE on the dashboard side so deleting a
+    # dashboard also wipes its build chat — drafts and dashboards have
+    # a 1:1 lifecycle.
+    Column(
+        "dashboard_id",
+        UUID(as_uuid=False),
+        ForeignKey("dashboard.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
@@ -2251,4 +2280,230 @@ description_version = Table(
         "parent_id",
         text("version_number DESC"),
     ),
+)
+
+
+# ---------------------------------------------------------------------------
+# Dashboards (NEU-1811 DA-P3.1). Workspace-scoped authored surfaces
+# composed of widgets that pull from the curated DA catalog. Draft +
+# Publish lifecycle. Each dashboard has a 1:1 build chat (kind=
+# 'dashboard_build') and an optional set of link-tokens for external
+# share. Multi-schema by design — a single dashboard can compose
+# widgets across every schema the workspace has enabled.
+#
+# Design source: this session's DA-P3 lock + data-analytics.md
+# D3 / D5 / D6 / D7 / D11 / D12.
+# ---------------------------------------------------------------------------
+
+dashboard = Table(
+    "dashboard",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # URL-friendly identifier. Unique within a workspace; route is
+    # /dashboards/<slug>. Service layer enforces format + auto-derives
+    # from name on create.
+    Column("slug", String(255), nullable=False),
+    Column("name", String(255), nullable=False),
+    Column("description", Text, nullable=True),
+    # New dashboards start as drafts (Library renders them in Drafts
+    # section). Publish flips to ``published`` + sets published_at.
+    Column(
+        "status",
+        PgEnum(
+            DashboardStatusEnum,
+            name="dashboard_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'draft'"),
+    ),
+    Column(
+        "visibility",
+        PgEnum(
+            DashboardVisibilityEnum,
+            name="dashboard_visibility",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'workspace_members'"),
+    ),
+    # Back-pointer to the build chat. 1:1. SET NULL because the chat
+    # can be purged independently (compliance) — the dashboard widgets
+    # are the source of truth, the chat is the build history.
+    Column(
+        "build_chat_id",
+        UUID(as_uuid=False),
+        ForeignKey("chat.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # SET NULL on user deletion — keep the dashboard, lose attribution.
+    Column(
+        "owner_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "created_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column("published_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    # Library URL routing — /dashboards/<slug> per workspace.
+    UniqueConstraint(
+        "workspace_id",
+        "slug",
+        name="ux_dashboard_workspace_slug",
+    ),
+    # Library section filter — Drafts vs Published per workspace.
+    Index(
+        "ix_dashboard_workspace_status",
+        "workspace_id",
+        "status",
+    ),
+    # Tenant-scoped lookups (e.g. cross-workspace admin views).
+    Index("ix_dashboard_tenant", "tenant_id"),
+)
+
+
+dashboard_widget = Table(
+    "dashboard_widget",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "dashboard_id",
+        UUID(as_uuid=False),
+        ForeignKey("dashboard.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # 12-col grid position (locked Q1 in the DA-P3 design discussion).
+    # x ∈ [0, 12), w ∈ [1, 12]; y unbounded above; h ∈ [1, 12]. Service
+    # layer validates ranges + non-overlap.
+    Column("position_x", Integer, nullable=False, server_default=text("0")),
+    Column("position_y", Integer, nullable=False, server_default=text("0")),
+    Column("position_w", Integer, nullable=False, server_default=text("4")),
+    Column("position_h", Integer, nullable=False, server_default=text("2")),
+    Column(
+        "widget_type",
+        PgEnum(
+            DashboardWidgetTypeEnum,
+            name="dashboard_widget_type",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    Column("title", String(255), nullable=False),
+    Column("description", Text, nullable=True),
+    # data_binding: { connection_id, schema_name, sql, params? }
+    # viz_spec: { chart_type, x_axis, y_axis, series?, format?, ... }
+    # grounding_metadata: { tables[], columns[], curator, last_validated_at }
+    # All JSONB so we can partial-update specific keys without
+    # rewriting the blob and for fast JSONB-path queries.
+    Column("data_binding", JSONB, nullable=False),
+    Column("viz_spec", JSONB, nullable=False),
+    Column("grounding_metadata", JSONB, nullable=True),
+    # The build-chat message that proposed this widget. SET NULL on
+    # message purge (compliance) — the widget itself is the ground
+    # truth; chat history is the audit trail.
+    Column(
+        "created_by_message_id",
+        UUID(as_uuid=False),
+        ForeignKey("message.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    # Canonical render-time query — every dashboard load hits this.
+    Index("ix_dashboard_widget_dashboard", "dashboard_id"),
+)
+
+
+dashboard_link_token = Table(
+    "dashboard_link_token",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "dashboard_id",
+        UUID(as_uuid=False),
+        ForeignKey("dashboard.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Cryptographically random opaque token — 32+ bytes URL-safe-base64
+    # minted at the service layer. UNIQUE-indexed for the
+    # /shared/{token} viewer path.
+    Column("token", String(128), nullable=False),
+    Column("expires_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("revoked_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "created_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # Bumped on every successful anonymous access — feeds the share
+    # dialog's "viewed N times" caption and the audit log.
+    Column(
+        "accessed_count",
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+    ),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+
+    # Public viewer lookup — must be UNIQUE; collisions would route
+    # one token to another dashboard.
+    Index(
+        "ux_dashboard_link_token_token",
+        "token",
+        unique=True,
+    ),
+    # Admin's share dialog: "list tokens for this dashboard".
+    Index("ix_dashboard_link_token_dashboard", "dashboard_id"),
 )
