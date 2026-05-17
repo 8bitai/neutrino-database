@@ -63,8 +63,12 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 
-revision: str = "a4b5c6d7e8f9"
-down_revision: Union[str, Sequence[str], None] = "z3a4b5c6d7e8"
+revision: str = "c6d7e8f9a0b1"
+# Re-chained DA-P3-FIX-REVISION: the original "a4b5c6d7e8f9" collided
+# with the pre-existing wcdc_allow_sample_default_true migration (same
+# hash, same down_revision). Re-targets to the current head
+# (da_description_trust_fields) so alembic has a single linear chain.
+down_revision: Union[str, Sequence[str], None] = "b5c6d7e8f9a0"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
