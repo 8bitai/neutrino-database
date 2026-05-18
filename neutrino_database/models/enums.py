@@ -335,3 +335,33 @@ class ChatKindEnum(str, Enum):
     AD_HOC = "ad_hoc"
     DASHBOARD_BUILD = "dashboard_build"
 
+
+class DAAccessResourceTypeEnum(str, Enum):
+    """Which DA catalog level a workspace_da_access_grant row applies
+    to (X-DA-ACL-1). The grant + the resource_id together identify the
+    exact node in the schema → table → column tree we're granting or
+    denying access to."""
+    SCHEMA = "schema"
+    TABLE = "table"
+    COLUMN = "column"
+
+
+class DAAccessEffectEnum(str, Enum):
+    """Two-state effect for a workspace_da_access_grant row
+    (X-DA-ACL-1). 'Inherits parent' is the absence of any row at this
+    level — it is never stored. Resolution rule applied by the
+    service:
+
+      * Walk the resource tree from leaf up (column → table → schema
+        → workspace-member). Closest level with an explicit row
+        wins.
+      * At the same level, deny beats allow (column conflict can't
+        happen given the UNIQUE constraint, but the rule still holds
+        across levels: a child-allow can override a parent-deny).
+      * Tenant Owner / Tenant Admin / Workspace Admin bypass entirely
+        via the JWT projection.
+      * M10 PII / Restricted catalog flags hard-block above all of
+        this.
+    """
+    ALLOW = "allow"
+    DENY = "deny"

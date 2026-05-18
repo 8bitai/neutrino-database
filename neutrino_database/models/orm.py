@@ -2,6 +2,8 @@ from neutrino_database.models.credentials.api_keys import providers
 from neutrino_database.models.enums import (
     AgentMessageRole,
     ChatKindEnum,
+    DAAccessEffectEnum,
+    DAAccessResourceTypeEnum,
     DAConnectionStatusEnum,
     DADescriptionScopeEnum,
     DADescriptionSourceEnum,
@@ -1131,6 +1133,34 @@ class WorkspaceDASettings(Base):
     workspace_id: Mapped[str]
     da_include_sample_values: Mapped[bool]
     da_pii_redaction_enabled: Mapped[bool]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class WorkspaceDAAccessGrant(Base):
+    """Per-member ACL row on a DA catalog resource (X-DA-ACL-1).
+
+    One row per ``(workspace_id, user_id, resource_type, resource_id)``
+    grants or denies access at a specific level of the schema → table
+    → column tree. Absence of a row at a level = "inherit from
+    parent". Resolution rule lives in the service (see
+    ``WorkspaceDAAccessService.resolve_effective_access`` in
+    agent-platform).
+
+    Tenant Owner / Tenant Admin / Workspace Admin bypass entirely via
+    the JWT projection. M10 PII / Restricted catalog flags hard-block
+    above this unconditionally.
+    """
+
+    __table__ = tables.workspace_da_access_grant
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    user_id: Mapped[str]
+    resource_type: Mapped[DAAccessResourceTypeEnum]
+    resource_id: Mapped[str]
+    effect: Mapped[DAAccessEffectEnum]
+    created_by: Mapped[str]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 
