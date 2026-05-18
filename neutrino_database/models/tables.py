@@ -638,6 +638,19 @@ chat = Table(
 
     Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
     Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    # Workspace this chat thread belongs to (X-CHAT-WS-1). NOT NULL —
+    # every chat lives inside exactly one workspace. CASCADE so that
+    # deleting a workspace removes its chats (mirrors
+    # ``dashboard.workspace_id`` which is also CASCADE). Without this
+    # column the per-workspace list query has nothing to ground its
+    # authorization on, so a Tenant Admin in two workspaces sees the
+    # same threads in both — see X-CHAT-WS-1 for context.
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("created_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
     Column("title", String(255), nullable=True),
     Column("incognito", Boolean, nullable=False, server_default=text("false")),
@@ -674,7 +687,20 @@ chat = Table(
     Index("ix_chat_tenant_incognito", "tenant_id", "incognito"),
     Index("ix_chat_tenant_non_incognito", "tenant_id", postgresql_where=text("incognito = false")),
     Index("ix_chat_tenant_updated_at", "tenant_id", "updated_at"),
-    Index("ix_chat_created_by", "tenant_id", "created_by"),
+    # Per-user per-workspace list index (X-CHAT-WS-1). Keys exactly
+    # the FE's list query:
+    #   WHERE workspace_id = :ws AND created_by = :user
+    #         AND deleted_at IS NULL
+    #   ORDER BY updated_at DESC
+    # Partial on ``deleted_at IS NULL`` so soft-deleted rows don't
+    # bloat the index.
+    Index(
+        "ix_chat_workspace_created_by_updated_at",
+        "workspace_id",
+        "created_by",
+        text("updated_at DESC"),
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
 )
 
 message = Table(

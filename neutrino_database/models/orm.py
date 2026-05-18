@@ -425,6 +425,11 @@ class Chat(Base):
     # Type hints for all columns
     id: Mapped[str]
     tenant_id: Mapped[str]
+    # X-CHAT-WS-1 — workspace this thread belongs to. NOT NULL; FK
+    # CASCADE to workspace. Every query path filters on this column
+    # against ``principal.workspace_id`` so switching workspaces
+    # switches conversation context cleanly.
+    workspace_id: Mapped[str]
     created_by: Mapped[Optional[str]]
     title: Mapped[Optional[str]]
     incognito: Mapped[bool]
