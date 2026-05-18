@@ -165,3 +165,173 @@ class ExcelDatasetStatus(str, Enum):
     READY = "ready"
     FAILED = "failed"
     DELETED = "deleted"
+
+
+# ---------------------------------------------------------------------------
+# Data Analytics pillar (NEU-1811 DA-P0).
+#
+# Eight enums backing the canonical metadata schema described in
+# `product-feature-roadmap/data-analytics/data-flow.md` §4.8. Naming is
+# DA-prefixed so they cannot collide with the legacy `ConnectionStatus`
+# (which is the ES connector enum, shared with SharePoint/Drive auth).
+# ---------------------------------------------------------------------------
+
+
+class DAConnectionStatusEnum(str, Enum):
+    """Lifecycle status of a tenant-level DA Connection.
+
+    pending_auth — created but credentials not yet verified
+    active       — credentials validated; ready for metadata sync + queries
+    degraded     — last sync had recoverable errors (partial failure)
+    error        — credentials invalid / persistent failure; admin attention
+    disabled     — admin paused the connection
+    """
+    PENDING_AUTH = "pending_auth"
+    ACTIVE = "active"
+    DEGRADED = "degraded"
+    ERROR = "error"
+    DISABLED = "disabled"
+
+
+class DASourceTypeEnum(str, Enum):
+    """Warehouse source types supported by the DA pillar.
+
+    v1 ships postgres + snowflake + bigquery; mysql + oracle queued. Mongo
+    arrives later via a separate NoSqlBaseAdapter (per feature.md F5).
+    """
+    POSTGRES = "postgres"
+    SNOWFLAKE = "snowflake"
+    BIGQUERY = "bigquery"
+    MYSQL = "mysql"
+    ORACLE = "oracle"
+
+
+class DATableTypeEnum(str, Enum):
+    """Kind of relation surfaced by INFORMATION_SCHEMA.TABLES."""
+    TABLE = "table"
+    VIEW = "view"
+    MATERIALIZED_VIEW = "materialized_view"
+
+
+class DAMetricSourceEnum(str, Enum):
+    """Where this Metric came from (HITL provenance).
+
+    admin_authored        — Workspace Admin wrote it directly
+    ai_suggested          — AI proposed; pending admin accept/reject
+    ai_accepted_by_admin  — AI proposed and admin accepted unchanged
+    """
+    ADMIN_AUTHORED = "admin_authored"
+    AI_SUGGESTED = "ai_suggested"
+    AI_ACCEPTED_BY_ADMIN = "ai_accepted_by_admin"
+
+
+class DAJoinHintSourceEnum(str, Enum):
+    """Where this JoinHint came from (HITL provenance).
+
+    inferred_from_fk — auto-derived from FK constraints during Phase 1 pull
+    admin_authored / ai_suggested / ai_accepted_by_admin as above
+    """
+    ADMIN_AUTHORED = "admin_authored"
+    INFERRED_FROM_FK = "inferred_from_fk"
+    AI_SUGGESTED = "ai_suggested"
+    AI_ACCEPTED_BY_ADMIN = "ai_accepted_by_admin"
+
+
+class DAJoinTypeEnum(str, Enum):
+    """SQL join semantics the hint describes."""
+    INNER = "inner"
+    LEFT = "left"
+    RIGHT = "right"
+    FULL = "full"
+
+
+class DADescriptionScopeEnum(str, Enum):
+    """What kind of row a description_version row belongs to.
+
+    Soft-FK pattern: `description_version.parent_id` references one of
+    four parent tables; `scope` discriminates. No DB-level FK because
+    Postgres doesn't support discriminated FKs natively.
+    """
+    TABLE = "table"
+    COLUMN = "column"
+    METRIC = "metric"
+    JOIN_HINT = "join_hint"
+
+
+class DADescriptionSourceEnum(str, Enum):
+    """Provenance of a description_version entry.
+
+    native_comment  — copied from the source DDL during Phase 1
+    ai_generated    — created by GovernedLLM (admin-triggered)
+    ai_suggested    — AI proposed but not yet admin-accepted (HITL)
+    admin_edited    — Workspace Admin wrote / overrode the description
+    """
+    NATIVE_COMMENT = "native_comment"
+    AI_GENERATED = "ai_generated"
+    AI_SUGGESTED = "ai_suggested"
+    ADMIN_EDITED = "admin_edited"
+
+
+# ---------------------------------------------------------------------------
+# Dashboards (NEU-1811 DA-P3.1). Workspace-scoped authored surfaces
+# built via the build chat. Draft/Published lifecycle + workspace /
+# restricted / link-only visibility + per-widget data binding.
+# ---------------------------------------------------------------------------
+
+
+class DashboardStatusEnum(str, Enum):
+    """Lifecycle status of a saved dashboard.
+
+    draft     — work in progress, visible only to workspace admins
+                in the Library's Drafts section.
+    published — finalised, visible to every workspace member per
+                the visibility flag.
+    """
+    DRAFT = "draft"
+    PUBLISHED = "published"
+
+
+class DashboardVisibilityEnum(str, Enum):
+    """Audience scope for a published dashboard.
+
+    workspace_members — every member of the workspace can view (default
+                        for published dashboards).
+    restricted        — explicit member / group allowlist via
+                        dashboard_share rows. (v2; the table doesn't
+                        ship in DA-P3.1 — TD-DASH-INTERNAL-SHARE-1.)
+    link_only         — unlisted; only a link-token holder can view.
+                        No workspace-member access by default.
+    """
+    WORKSPACE_MEMBERS = "workspace_members"
+    RESTRICTED = "restricted"
+    LINK_ONLY = "link_only"
+
+
+class DashboardWidgetTypeEnum(str, Enum):
+    """v1 widget catalog — what the canvas grid can render.
+
+    Each maps 1:1 to a visualization renderer in
+    components/visualizations on the FE side.
+    """
+    KPI_TILE = "kpi_tile"
+    LINE_CHART = "line_chart"
+    BAR_CHART = "bar_chart"
+    STACKED_BAR = "stacked_bar"
+    PIE_CHART = "pie_chart"
+    DONUT_CHART = "donut_chart"
+    TABLE = "table"
+    TEXT = "text"
+
+
+class ChatKindEnum(str, Enum):
+    """What a chat thread is for (D6).
+
+    ad_hoc          — the day-to-day Q&A chat surface. The default.
+    dashboard_build — admin's build conversation with the dashboard
+                      agent. One row per dashboard, set when the
+                      dashboard is created. Drafts in the Library
+                      are these chats.
+    """
+    AD_HOC = "ad_hoc"
+    DASHBOARD_BUILD = "dashboard_build"
+

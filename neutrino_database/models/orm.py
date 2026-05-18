@@ -1,6 +1,18 @@
 from neutrino_database.models.credentials.api_keys import providers
 from neutrino_database.models.enums import (
     AgentMessageRole,
+    ChatKindEnum,
+    DAConnectionStatusEnum,
+    DADescriptionScopeEnum,
+    DADescriptionSourceEnum,
+    DAJoinHintSourceEnum,
+    DAJoinTypeEnum,
+    DAMetricSourceEnum,
+    DASourceTypeEnum,
+    DATableTypeEnum,
+    DashboardStatusEnum,
+    DashboardVisibilityEnum,
+    DashboardWidgetTypeEnum,
     ExcelDatasetStatus,
     IdpProviderEnum,
     KeyStatusEnum,
@@ -417,6 +429,12 @@ class Chat(Base):
     title: Mapped[Optional[str]]
     incognito: Mapped[bool]
     pinned: Mapped[bool]
+    # D6 — chat thread kind. ``ad_hoc`` (default) for Q&A;
+    # ``dashboard_build`` for build conversations linked to a Dashboard.
+    kind: Mapped[ChatKindEnum]
+    # 1:1 back-pointer to the Dashboard this chat is building. NULL
+    # for ad_hoc chats; CASCADE on dashboard delete.
+    dashboard_id: Mapped[Optional[str]]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
     deleted_at: Mapped[Optional[datetime]]
@@ -922,4 +940,346 @@ class TenancyOwnershipTransfer(Base):
     expires_at: Mapped[datetime]
     accepted_at: Mapped[Optional[datetime]]
     cancelled_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+
+
+# ===========================================================================
+# Data Analytics — ORM wrappers (NEU-1811 DA-P0).
+#
+# Seven tables encoding the DA pillar's per-warehouse curated state. See
+# tables.py for the canonical schema and the inline service-ownership
+# comment block (feature.md F4). Pydantic boundary models live alongside
+# in da_schemas.py — these ORM classes are for SQLAlchemy session use
+# (filters, inserts, joins) inside connector-service and agent-platform.
+# ===========================================================================
+
+
+class DAConnection(Base):
+    """Tenant-level DA Connection — one row per tenant warehouse credential.
+
+    Lifecycle CRUD owned by connector-service (feature.md F4). agent-platform
+    reads it to know which connection to call when running metadata sync /
+    SQL execution against the warehouse.
+    """
+
+    __table__ = tables.da_connection
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    source_type: Mapped[DASourceTypeEnum]
+    connection_name: Mapped[str]
+    credentials: Mapped[dict]  # KMS-wrapped JSONB
+    status: Mapped[DAConnectionStatusEnum]
+    # NULL = unrestricted; list[str] = tenant-allowed schema whitelist.
+    allowed_schemas: Mapped[Optional[list]]
+    created_by: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class DACatalogSchema(Base):
+    """Tenant-level fact: a schema discovered in a connected warehouse.
+
+    Shared across every workspace in the tenant (the schema exists
+    regardless of who curates it). Re-synced by connector-service's
+    discovery pass; workspaces layer opinions on top via
+    workspace_curation_da_* overlays.
+    """
+
+    __table__ = tables.da_catalog_schema
+
+    id: Mapped[str]
+    da_connection_id: Mapped[str]
+    schema_name: Mapped[str]
+    schema_description: Mapped[Optional[str]]
+    is_pii: Mapped[bool]
+    is_restricted: Mapped[bool]
+    last_synced_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class DACatalogTable(Base):
+    """Tenant-level fact: a table within a catalog schema.
+
+    No workspace opinion fields here — those live on
+    workspace_curation_da_table. Only DDL-derived facts (table_name,
+    table_type, native_comment, row_count).
+    """
+
+    __table__ = tables.da_catalog_table
+
+    id: Mapped[str]
+    da_catalog_schema_id: Mapped[str]
+    table_name: Mapped[str]
+    table_type: Mapped[DATableTypeEnum]
+    native_comment: Mapped[Optional[str]]
+    row_count: Mapped[Optional[int]]
+    is_pii: Mapped[bool]
+    is_restricted: Mapped[bool]
+    last_synced_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class DACatalogColumn(Base):
+    """Tenant-level fact: a column within a catalog table.
+
+    Holds DDL + compliance classification (is_pii / is_restricted).
+    Classification is shared across workspaces — same column has the
+    same PII status everywhere. Per-workspace LLM context lives on
+    workspace_curation_da_column.
+    """
+
+    __table__ = tables.da_catalog_column
+
+    id: Mapped[str]
+    da_catalog_table_id: Mapped[str]
+    column_name: Mapped[str]
+    data_type: Mapped[str]
+    nullable: Mapped[bool]
+    is_primary_key: Mapped[bool]
+    is_foreign_key: Mapped[bool]
+    foreign_key_to: Mapped[Optional[list]]
+    native_comment: Mapped[Optional[str]]
+    ordinal_position: Mapped[int]
+    is_pii: Mapped[bool]
+    is_restricted: Mapped[bool]
+    last_synced_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class WorkspaceCurationDATable(Base):
+    """Workspace's opinion layered on a catalog table.
+
+    Thin row: which catalog table this workspace exposes + per-workspace
+    ``description`` (single field, two editors — see description-generation.md
+    §M1) + trust metadata. One row per (workspace_id, da_catalog_table_id).
+    """
+
+    __table__ = tables.workspace_curation_da_table
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    da_catalog_table_id: Mapped[str]
+    table_logical_name: Mapped[Optional[str]]
+    description: Mapped[Optional[str]]
+    synonyms: Mapped[Optional[list]]
+    description_origin: Mapped[str]
+    ai_accepted_at: Mapped[Optional[datetime]]
+    ai_last_generated_at: Mapped[Optional[datetime]]
+    is_included: Mapped[bool]
+    is_archived: Mapped[bool]
+    last_enriched_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class WorkspaceCurationDAColumn(Base):
+    """Workspace's opinion layered on a catalog column.
+
+    Holds per-workspace LLM context (single ``description`` field + trust
+    metadata, synonyms, sample values, valid aggregations) plus an
+    upgrade-only ``is_restricted_override``. No PII override field — PII
+    is strictly catalog-owned for compliance consistency.
+    """
+
+    __table__ = tables.workspace_curation_da_column
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    da_catalog_column_id: Mapped[str]
+    column_logical_name: Mapped[Optional[str]]
+    description: Mapped[Optional[str]]
+    synonyms: Mapped[Optional[list]]
+    unit: Mapped[Optional[str]]
+    format_hint: Mapped[Optional[str]]
+    valid_aggregations: Mapped[Optional[list]]
+    description_origin: Mapped[str]
+    ai_accepted_at: Mapped[Optional[datetime]]
+    ai_last_generated_at: Mapped[Optional[datetime]]
+    sample_values: Mapped[Optional[list]]
+    cardinality_score: Mapped[Optional[float]]
+    statistical_profile: Mapped[Optional[dict]]
+    is_restricted_override: Mapped[bool]
+    is_included: Mapped[bool]
+    is_archived: Mapped[bool]
+    last_enriched_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class WorkspaceDASettings(Base):
+    """Workspace-level Data Analytics settings (DA-P1l.1.0).
+
+    One row per workspace, lazy-created on first PATCH. Holds toggles
+    that govern AI description generation behaviour — see M11 in
+    ``product-feature-roadmap/data-analytics/description-generation.md``.
+
+    Future DA workspace settings (default model preference, cost cap,
+    etc.) land here rather than as JSONB sprawl on the workspace row.
+    """
+
+    __table__ = tables.workspace_da_settings
+
+    workspace_id: Mapped[str]
+    da_include_sample_values: Mapped[bool]
+    da_pii_redaction_enabled: Mapped[bool]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class Metric(Base):
+    """Workspace-scoped business metric.
+
+    HITL lifecycle: AI suggestions land with ``accepted=false`` until an
+    admin accepts. Partial unique on (workspace_id, name) WHERE not
+    archived — archiving a metric frees its name for reuse.
+    """
+
+    __table__ = tables.metric
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    name: Mapped[str]
+    description: Mapped[Optional[str]]
+    sql_expression: Mapped[str]
+    filters: Mapped[Optional[str]]
+    applicable_tables: Mapped[list]
+    valid_dimensions: Mapped[Optional[list]]
+    source: Mapped[DAMetricSourceEnum]
+    accepted: Mapped[bool]
+    created_by: Mapped[Optional[str]]
+    updated_by: Mapped[Optional[str]]
+    last_used_at: Mapped[Optional[datetime]]
+    is_archived: Mapped[bool]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class JoinHint(Base):
+    """Workspace-scoped join hint between two curated tables.
+
+    Cascades when either side table is removed (the hint becomes
+    meaningless). HITL: AI-suggested hints land with ``accepted=false``.
+    """
+
+    __table__ = tables.join_hint
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    left_table_id: Mapped[str]
+    left_columns: Mapped[list]
+    right_table_id: Mapped[str]
+    right_columns: Mapped[list]
+    join_type: Mapped[DAJoinTypeEnum]
+    semantic_description: Mapped[Optional[str]]
+    source: Mapped[DAJoinHintSourceEnum]
+    accepted: Mapped[bool]
+    created_by: Mapped[Optional[str]]
+    is_archived: Mapped[bool]
+    created_at: Mapped[datetime]
+
+
+class DescriptionVersion(Base):
+    """Append-only version history for descriptions across 4 scopes.
+
+    Soft-FK pattern: ``parent_id`` points at one of
+    ``workspace_metadata_table`` / ``workspace_metadata_column`` /
+    ``metric`` / ``join_hint`` — discriminated by ``scope``. Service layer
+    enforces parent_id matches the scope.
+
+    No ``updated_at`` — corrections are new versions, not in-place edits.
+    """
+
+    __table__ = tables.description_version
+
+    id: Mapped[str]
+    scope: Mapped[DADescriptionScopeEnum]
+    parent_id: Mapped[str]
+    version_number: Mapped[int]
+    source: Mapped[DADescriptionSourceEnum]
+    content: Mapped[str]
+    generated_at: Mapped[datetime]
+    generated_by: Mapped[Optional[str]]
+    inputs_snapshot: Mapped[Optional[dict]]
+
+
+# ---------------------------------------------------------------------------
+# Dashboards (NEU-1811 DA-P3.1).
+# ---------------------------------------------------------------------------
+
+
+class Dashboard(Base):
+    """Workspace-scoped authored dashboard. Draft / Published lifecycle;
+    workspace_members / restricted / link_only visibility. 1:1 build
+    chat (``build_chat_id`` → chat where kind=dashboard_build). Widgets
+    composed across every schema the workspace has DA-enabled.
+    """
+
+    __table__ = tables.dashboard
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    workspace_id: Mapped[str]
+    slug: Mapped[str]
+    name: Mapped[str]
+    description: Mapped[Optional[str]]
+    status: Mapped[DashboardStatusEnum]
+    visibility: Mapped[DashboardVisibilityEnum]
+    build_chat_id: Mapped[Optional[str]]
+    owner_id: Mapped[Optional[str]]
+    created_by: Mapped[Optional[str]]
+    published_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class DashboardWidget(Base):
+    """A single widget on a dashboard. 12-col grid position
+    (x/y/w/h). Inline SQL data binding (Q2 lock in design). viz_spec
+    + grounding_metadata carry the chart shape + provenance the build
+    agent recorded when proposing this widget.
+    """
+
+    __table__ = tables.dashboard_widget
+
+    id: Mapped[str]
+    dashboard_id: Mapped[str]
+    position_x: Mapped[int]
+    position_y: Mapped[int]
+    position_w: Mapped[int]
+    position_h: Mapped[int]
+    widget_type: Mapped[DashboardWidgetTypeEnum]
+    title: Mapped[str]
+    description: Mapped[Optional[str]]
+    data_binding: Mapped[dict]
+    viz_spec: Mapped[dict]
+    grounding_metadata: Mapped[Optional[dict]]
+    created_by_message_id: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class DashboardLinkToken(Base):
+    """Anonymous shareable URL token for one dashboard. Production-grade
+    shape (DA-P3.4): the URL-safe plaintext token materialises exactly
+    once (in the mint response); the DB stores SHA-256 of it in
+    ``token_hash`` plus a non-secret ``token_short`` prefix for UI
+    identification. ``revoked_at`` / ``revoked_by_user_id`` close the
+    audit trail.
+    """
+
+    __table__ = tables.dashboard_link_token
+
+    id: Mapped[str]
+    dashboard_id: Mapped[str]
+    token_hash: Mapped[str]
+    token_short: Mapped[str]
+    expires_at: Mapped[Optional[datetime]]
+    revoked_at: Mapped[Optional[datetime]]
+    revoked_by_user_id: Mapped[Optional[str]]
+    created_by: Mapped[Optional[str]]
+    accessed_count: Mapped[int]
     created_at: Mapped[datetime]

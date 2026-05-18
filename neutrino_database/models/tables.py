@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Table, Column, Integer, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
-    UniqueConstraint, Numeric, DDL, event
+    UniqueConstraint, Numeric, DDL, event, CheckConstraint
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, INET
 from sqlalchemy.sql import func, text
@@ -10,7 +10,19 @@ from neutrino_database.models.base import metadata
 from neutrino_database.models.enums import (
     AgentMessageRole,
     AllowedModuleEnum,
+    ChatKindEnum,
     ConnectionStatus,
+    DAConnectionStatusEnum,
+    DADescriptionScopeEnum,
+    DADescriptionSourceEnum,
+    DAJoinHintSourceEnum,
+    DAJoinTypeEnum,
+    DAMetricSourceEnum,
+    DASourceTypeEnum,
+    DATableTypeEnum,
+    DashboardStatusEnum,
+    DashboardVisibilityEnum,
+    DashboardWidgetTypeEnum,
     ExcelDatasetStatus,
     FileProcessingStatusEnum,
     IdpProviderEnum,
@@ -630,6 +642,31 @@ chat = Table(
     Column("title", String(255), nullable=True),
     Column("incognito", Boolean, nullable=False, server_default=text("false")),
     Column("pinned", Boolean, nullable=False, server_default=text("false")),
+    # D6 — what this chat is for. ``ad_hoc`` (default) is the day-to-
+    # day Q&A chat surface. ``dashboard_build`` flags this row as the
+    # build conversation behind one Dashboard (linked via the
+    # ``dashboard.build_chat_id`` FK back-pointer). Drafts in the
+    # Library are these chats.
+    Column(
+        "kind",
+        PgEnum(
+            ChatKindEnum,
+            name="chat_kind",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'ad_hoc'"),
+    ),
+    # Back-pointer to the dashboard this chat is building. NULL for
+    # ad_hoc chats. CASCADE on the dashboard side so deleting a
+    # dashboard also wipes its build chat — drafts and dashboards have
+    # a 1:1 lifecycle.
+    Column(
+        "dashboard_id",
+        UUID(as_uuid=False),
+        ForeignKey("dashboard.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
@@ -1381,5 +1418,1141 @@ tenancy_ownership_transfer = Table(
         postgresql_where=text(
             "accepted_at IS NULL AND cancelled_at IS NULL"
         ),
+    ),
+)
+
+
+# ============================================================================
+# Data Analytics — canonical metadata schema (NEU-1811 DA-P0).
+#
+# Seven tables encode the DA pillar's per-warehouse curated state. Spec:
+# ``product-feature-roadmap/data-analytics/data-flow.md`` §4.8.
+#
+# Service ownership (feature.md F4):
+#   * ``da_connection`` — connector-service owns lifecycle CRUD
+#   * the six workspace_metadata_* / metric / join_hint / description_version
+#     tables — agent-platform owns every write (metadata sync, LLM calls,
+#     curation acceptance, etc.)
+# ============================================================================
+
+
+# ---------------------------------------------------------------------------
+# da_connection — tenant-level Connection (Step 1 in data-flow.md).
+#
+# One row per tenant warehouse credential. Same physical warehouse can be
+# represented by two rows (e.g. two Snowflake accounts on one tenant) — the
+# unique key is (tenant_id, source_type, connection_name).
+#
+# Distinct from the legacy ``connections`` table above (which is the ES
+# connector table — SharePoint / Drive workspace-scoped OAuth). The two
+# entities have different semantics; co-locating them would be the kind
+# of conflation called out in feature.md F4.
+# ---------------------------------------------------------------------------
+
+da_connection = Table(
+    "da_connection",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "source_type",
+        PgEnum(
+            DASourceTypeEnum,
+            name="da_source_type",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    Column("connection_name", String(255), nullable=False),
+    # KMS-wrapped credentials blob. JSONB so the adapter can pack arbitrary
+    # shape (password vs key-pair vs service-account JSON). PII-tagged so
+    # the C6 anonymization runner finds it.
+    Column(
+        "credentials",
+        JSONB,
+        nullable=False,
+        comment="pii:credentials",
+    ),
+    Column(
+        "status",
+        PgEnum(
+            DAConnectionStatusEnum,
+            name="da_connection_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'pending_auth'"),
+    ),
+    # Tenant-level schema allowlist (NEU-1811 DA-P1f).
+    #   NULL          → unrestricted; workspace admins see every schema
+    #                   the warehouse exposes.
+    #   list[str]     → whitelist; only these schemas are visible to
+    #                   workspace admins and queryable via execute_query.
+    # Enforced at the connector-service adapter / endpoint layer; this
+    # column is the source-of-truth.
+    Column("allowed_schemas", JSONB, nullable=True),
+    # SET NULL so a user erasure (GDPR Art 17) doesn't take the connection
+    # down with the actor row.
+    Column(
+        "created_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    # Uniqueness scope per data-flow.md §1: "unique among that tenant's
+    # <source> connections". Cross-source name collisions are fine.
+    Index(
+        "ux_da_connection_tenant_source_name",
+        "tenant_id",
+        "source_type",
+        "connection_name",
+        unique=True,
+    ),
+    Index("ix_da_connection_tenant", "tenant_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# da_catalog_schema / da_catalog_table / da_catalog_column — tenant-level
+# facts about what's in the warehouse (DA-P1g refactor).
+#
+# Why these are tenant-scoped, not workspace-scoped: a column either IS
+# or ISN'T PII; "users.email" has one true type regardless of which
+# workspace is looking at it. Production catalog systems (Looker, dbt,
+# Hex, Metabase) all separate the catalog (facts) from per-team curation
+# (opinions). Workspace-level enrichment lives on the
+# workspace_curation_da_* overlays below.
+# ---------------------------------------------------------------------------
+
+da_catalog_schema = Table(
+    "da_catalog_schema",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "da_connection_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_connection.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("schema_name", String(255), nullable=False),
+    Column("schema_description", Text, nullable=True),
+    # Compliance classification — see DA-P1i.3. Schema-level tags
+    # propagate to every table + column inside (effective-at-read).
+    Column(
+        "is_pii",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "is_restricted",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column("last_synced_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    Index(
+        "ux_da_catalog_schema_conn_name",
+        "da_connection_id",
+        "schema_name",
+        unique=True,
+    ),
+    Index("ix_da_catalog_schema_conn", "da_connection_id"),
+)
+
+
+da_catalog_table = Table(
+    "da_catalog_table",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "da_catalog_schema_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_catalog_schema.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("table_name", String(255), nullable=False),
+    Column(
+        "table_type",
+        PgEnum(
+            DATableTypeEnum,
+            name="da_table_type",
+            values_callable=lambda enum: [e.value for e in enum],
+            create_type=False,
+        ),
+        nullable=False,
+        server_default=text("'table'"),
+    ),
+    Column("native_comment", Text, nullable=True),
+    Column("row_count", BigInteger, nullable=True),
+    # Table-level compliance classification — see DA-P1i.3. Propagates
+    # to every column in this table (effective-at-read).
+    Column(
+        "is_pii",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "is_restricted",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column("last_synced_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    Index(
+        "ux_da_catalog_table_schema_name",
+        "da_catalog_schema_id",
+        "table_name",
+        unique=True,
+    ),
+    Index("ix_da_catalog_table_schema", "da_catalog_schema_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# da_catalog_column — TWO-WRITER row with documented column ownership.
+#
+# Multiple services write to this row on different columns; this is the
+# fine pattern (each column has a single owner). See
+# `product-feature-roadmap/data-analytics/description-generation.md`
+# discussion log 2026-05-12 — "Classification stays in connector-service".
+#
+# Column ownership:
+#
+#   * Sync (connector-service.ConnectionService.sync_catalog):
+#       column_name, data_type, nullable, is_primary_key, is_foreign_key,
+#       foreign_key_to, native_comment, ordinal_position, last_synced_at,
+#       created_at, updated_at
+#
+#   * Classification (connector-service.ConnectionService
+#     .patch_catalog_column_classification):
+#       is_pii, is_restricted
+#
+# Hard invariant: sync's UPDATE branch MUST NOT touch is_pii / is_restricted
+# (would race against classification). Sync writes are upserts that
+# preserve classification state on existing rows.
+# ---------------------------------------------------------------------------
+
+da_catalog_column = Table(
+    "da_catalog_column",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "da_catalog_table_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_catalog_table.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+
+    # DDL-derived facts
+    Column("column_name", String(255), nullable=False),
+    Column("data_type", String(255), nullable=False),
+    Column("nullable", Boolean, nullable=False),
+    Column(
+        "is_primary_key",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "is_foreign_key",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    # List of {target_schema, target_table, target_column}.
+    Column("foreign_key_to", JSONB, nullable=True),
+    Column("native_comment", Text, nullable=True),
+    Column("ordinal_position", Integer, nullable=False),
+
+    # Compliance classification — tenant-owned, no workspace override
+    # for is_pii at all; is_restricted can only be upgraded by workspace
+    # via workspace_curation_da_column.is_restricted_override.
+    Column(
+        "is_pii",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "is_restricted",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+
+    Column("last_synced_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    Index(
+        "ux_da_catalog_column_table_name",
+        "da_catalog_table_id",
+        "column_name",
+        unique=True,
+    ),
+    Index("ix_da_catalog_column_table", "da_catalog_table_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# workspace_curation_da_table / workspace_curation_da_column — workspace
+# opinion overlays on top of the tenant catalog (DA-P1g refactor).
+#
+# Thin rows: "this workspace exposes this catalog row to its users",
+# plus per-workspace AI / admin descriptions, synonyms, sample values,
+# etc. The same column can be described differently for different teams
+# (sales workspace ≠ finance workspace), so enrichment lives here.
+# Compliance classification (is_pii / is_restricted) lives on the
+# catalog — a workspace cannot disagree about PII status.
+# ---------------------------------------------------------------------------
+
+workspace_curation_da_table = Table(
+    "workspace_curation_da_table",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "da_catalog_table_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_catalog_table.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+
+    # Per-workspace opinion / context.
+    #
+    # DA-P1l.1.0 collapsed the two-field model (admin_seed_description +
+    # ai_generated_description) into a single ``description`` field with
+    # trust metadata below. See description-generation.md §M1, M2.
+    Column("table_logical_name", String(255), nullable=True),
+    Column("description", Text, nullable=True),
+    # DA-P1k.1 — workspace-scoped alt names; same shape as the
+    # equivalent ``workspace_curation_da_column.synonyms``. NULL =
+    # not set; empty list semantically equivalent.
+    Column("synonyms", JSONB, nullable=True),
+
+    # Trust metadata (M2). origin records who wrote the current
+    # description text — 'human' or 'ai'. Admin edits flip it to 'human'
+    # and clear ai_accepted_at; Generate / Regenerate flip it to 'ai'
+    # and stamp ai_last_generated_at. ai_accepted_at is the HITL gate:
+    # chat (T2S) trusts an ai-origin description only when this is set.
+    Column(
+        "description_origin",
+        String(8),
+        nullable=False,
+        server_default=text("'human'"),
+    ),
+    Column("ai_accepted_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("ai_last_generated_at", TIMESTAMP(timezone=True), nullable=True),
+
+    # Curation
+    Column(
+        "is_included",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "is_archived",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column("last_enriched_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    CheckConstraint(
+        "description_origin IN ('human', 'ai')",
+        name="ck_wcdt_description_origin",
+    ),
+    Index(
+        "ux_wcdt_workspace_catalog",
+        "workspace_id",
+        "da_catalog_table_id",
+        unique=True,
+    ),
+    Index("ix_wcdt_workspace", "workspace_id"),
+    Index("ix_wcdt_catalog", "da_catalog_table_id"),
+)
+
+
+workspace_curation_da_column = Table(
+    "workspace_curation_da_column",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "da_catalog_column_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_catalog_column.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+
+    # Per-workspace LLM context.
+    #
+    # DA-P1l.1.0 collapsed the two-field model into a single ``description``
+    # field with trust metadata below. See description-generation.md §M1, M2.
+    Column("column_logical_name", String(255), nullable=True),
+    Column("description", Text, nullable=True),
+    Column("synonyms", JSONB, nullable=True),
+    Column("unit", String(64), nullable=True),
+    Column("format_hint", String(64), nullable=True),
+    Column("valid_aggregations", JSONB, nullable=True),
+
+    # Trust metadata (M2). Same semantics as workspace_curation_da_table.
+    Column(
+        "description_origin",
+        String(8),
+        nullable=False,
+        server_default=text("'human'"),
+    ),
+    Column("ai_accepted_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("ai_last_generated_at", TIMESTAMP(timezone=True), nullable=True),
+
+    # Phase-2 enrichment. DA-P1l.1.0 lifted the sampling toggle to the
+    # workspace level (workspace_da_settings.da_include_sample_values)
+    # per M11 — per-column was redundant because catalog flags
+    # (PII / Restricted) already hard-block sampling and is_included
+    # already controls whether the column is curated at all.
+    # sample_values can hold real PII from the warehouse — tagged so the
+    # C6 anonymization runner can null these on user erasure.
+    Column(
+        "sample_values",
+        JSONB,
+        nullable=True,
+        comment="pii:freetext",
+    ),
+    Column("cardinality_score", Float, nullable=True),
+    Column("statistical_profile", JSONB, nullable=True),
+
+    # Upgrade-only restricted override (compliance posture).
+    Column(
+        "is_restricted_override",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+
+    # Curation
+    Column(
+        "is_included",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "is_archived",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column("last_enriched_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    CheckConstraint(
+        "description_origin IN ('human', 'ai')",
+        name="ck_wcdc_description_origin",
+    ),
+    Index(
+        "ux_wcdc_workspace_catalog",
+        "workspace_id",
+        "da_catalog_column_id",
+        unique=True,
+    ),
+    Index("ix_wcdc_workspace", "workspace_id"),
+    Index("ix_wcdc_catalog", "da_catalog_column_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# workspace_da_settings — workspace-level DA settings (DA-P1l.1.0).
+#
+# Holds workspace-level toggles that govern AI description generation
+# behaviour. See M11 in product-feature-roadmap/data-analytics/
+# description-generation.md. One row per workspace, PK == FK to
+# workspace(id). Row is lazy-created on first PATCH; absence means
+# defaults apply.
+#
+# Future DA workspace settings (default model preference, cost cap,
+# etc.) land here rather than as JSONB sprawl on the workspace row.
+# ---------------------------------------------------------------------------
+
+workspace_da_settings = Table(
+    "workspace_da_settings",
+    metadata,
+
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+
+    # M11 toggles. Both default TRUE (fail-safe).
+    #
+    # da_include_sample_values: whether the TOP VALUES block appears in
+    # column prompts. PII/Restricted columns are skipped regardless
+    # (catalog hard-gate, M10).
+    #
+    # da_pii_redaction_enabled: whether to wrap LLM calls in GovernedLLM
+    # (PII pattern redaction in-flight). Reduces description quality
+    # when on — recommended only if workspace's LLM provider isn't a
+    # trusted private tenant.
+    Column(
+        "da_include_sample_values",
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    ),
+    Column(
+        "da_pii_redaction_enabled",
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    ),
+
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# metric — Entity 5 (§4.8).
+#
+# Workspace-scoped business metric. Independent HITL lifecycle (admin
+# accepts/rejects AI suggestions). Partial unique on (workspace_id, name)
+# WHERE is_archived = false — archiving a metric frees its name for reuse.
+# ---------------------------------------------------------------------------
+
+metric = Table(
+    "metric",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("name", String(255), nullable=False),
+    Column("description", Text, nullable=True),
+    Column("sql_expression", Text, nullable=False),
+    Column("filters", Text, nullable=True),
+    # List of table_name strings the metric applies to.
+    Column("applicable_tables", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    # List of column_name strings — dimensions the metric can be grouped by.
+    Column("valid_dimensions", JSONB, nullable=True),
+    Column(
+        "source",
+        PgEnum(
+            DAMetricSourceEnum,
+            name="da_metric_source",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'admin_authored'"),
+    ),
+    Column(
+        "accepted",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "created_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "updated_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column("last_used_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "is_archived",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    # Partial unique — archived rows don't block reusing the name.
+    Index(
+        "ux_metric_workspace_name_active",
+        "workspace_id",
+        "name",
+        unique=True,
+        postgresql_where=text("is_archived = false"),
+    ),
+    Index("ix_metric_workspace", "workspace_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# join_hint — Entity 6 (§4.8).
+#
+# Workspace-scoped join hint. Cascades when either side table is removed
+# (the hint becomes meaningless).
+# ---------------------------------------------------------------------------
+
+join_hint = Table(
+    "join_hint",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "left_table_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace_curation_da_table.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # JSONB list[str] — composite join keys supported (e.g. ["tenant_id", "user_id"]).
+    Column("left_columns", JSONB, nullable=False),
+    Column(
+        "right_table_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace_curation_da_table.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("right_columns", JSONB, nullable=False),
+    Column(
+        "join_type",
+        PgEnum(
+            DAJoinTypeEnum,
+            name="da_join_type",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'inner'"),
+    ),
+    Column("semantic_description", Text, nullable=True),
+    Column(
+        "source",
+        PgEnum(
+            DAJoinHintSourceEnum,
+            name="da_join_hint_source",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'admin_authored'"),
+    ),
+    Column(
+        "accepted",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "created_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "is_archived",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+
+    Index("ix_join_hint_workspace", "workspace_id"),
+    Index("ix_join_hint_left_table", "left_table_id"),
+    Index("ix_join_hint_right_table", "right_table_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# description_version — Entity 8 (§4.8). Append-only history.
+#
+# Soft-FK pattern: ``parent_id`` references one of four parent tables; the
+# ``scope`` column discriminates. Postgres doesn't natively support
+# discriminated FKs, so the parent FK is service-enforced (agent-platform
+# writes never insert mismatched (scope, parent_id) pairs).
+#
+# No ``updated_at`` — a correction is a new version, not an in-place edit.
+# Service-layer enforcement; DB-level immutability trigger deferred unless
+# audit pressure later demands it (see AUDIT.md for the call).
+# ---------------------------------------------------------------------------
+
+description_version = Table(
+    "description_version",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "scope",
+        PgEnum(
+            DADescriptionScopeEnum,
+            name="da_description_scope",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    # Soft FK — see note above. parent_id references whichever table the
+    # `scope` value points at: workspace_metadata_table /
+    # workspace_metadata_column / metric / join_hint.
+    Column("parent_id", UUID(as_uuid=False), nullable=False),
+    Column("version_number", Integer, nullable=False),
+    Column(
+        "source",
+        PgEnum(
+            DADescriptionSourceEnum,
+            name="da_description_source",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    Column("content", Text, nullable=False),
+    Column(
+        "generated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    # SET NULL so a user erasure doesn't destroy the version row itself.
+    Column(
+        "generated_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # For ai_generated / ai_suggested versions: DDL + comments + seed +
+    # samples + stats used at generation time. Reproducible + eval-replayable.
+    # May contain sample_values → PII-tagged.
+    Column(
+        "inputs_snapshot",
+        JSONB,
+        nullable=True,
+        comment="pii:freetext",
+    ),
+
+    # version_number is auto-incremented per (scope, parent_id) — only one
+    # row at each version. Service layer computes the next number on insert.
+    Index(
+        "ux_description_version_parent_version",
+        "scope",
+        "parent_id",
+        "version_number",
+        unique=True,
+    ),
+    # Latest-first read path: "give me the current description for this column".
+    Index(
+        "ix_description_version_parent_latest",
+        "scope",
+        "parent_id",
+        text("version_number DESC"),
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# Dashboards (NEU-1811 DA-P3.1). Workspace-scoped authored surfaces
+# composed of widgets that pull from the curated DA catalog. Draft +
+# Publish lifecycle. Each dashboard has a 1:1 build chat (kind=
+# 'dashboard_build') and an optional set of link-tokens for external
+# share. Multi-schema by design — a single dashboard can compose
+# widgets across every schema the workspace has enabled.
+#
+# Design source: this session's DA-P3 lock + data-analytics.md
+# D3 / D5 / D6 / D7 / D11 / D12.
+# ---------------------------------------------------------------------------
+
+dashboard = Table(
+    "dashboard",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # URL-friendly identifier. Unique within a workspace; route is
+    # /dashboards/<slug>. Service layer enforces format + auto-derives
+    # from name on create.
+    Column("slug", String(255), nullable=False),
+    Column("name", String(255), nullable=False),
+    Column("description", Text, nullable=True),
+    # New dashboards start as drafts (Library renders them in Drafts
+    # section). Publish flips to ``published`` + sets published_at.
+    Column(
+        "status",
+        PgEnum(
+            DashboardStatusEnum,
+            name="dashboard_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'draft'"),
+    ),
+    Column(
+        "visibility",
+        PgEnum(
+            DashboardVisibilityEnum,
+            name="dashboard_visibility",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'workspace_members'"),
+    ),
+    # Back-pointer to the build chat. 1:1. SET NULL because the chat
+    # can be purged independently (compliance) — the dashboard widgets
+    # are the source of truth, the chat is the build history.
+    Column(
+        "build_chat_id",
+        UUID(as_uuid=False),
+        ForeignKey("chat.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # SET NULL on user deletion — keep the dashboard, lose attribution.
+    Column(
+        "owner_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "created_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column("published_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    # Library URL routing — /dashboards/<slug> per workspace.
+    UniqueConstraint(
+        "workspace_id",
+        "slug",
+        name="ux_dashboard_workspace_slug",
+    ),
+    # Library section filter — Drafts vs Published per workspace.
+    Index(
+        "ix_dashboard_workspace_status",
+        "workspace_id",
+        "status",
+    ),
+    # Tenant-scoped lookups (e.g. cross-workspace admin views).
+    Index("ix_dashboard_tenant", "tenant_id"),
+)
+
+
+dashboard_widget = Table(
+    "dashboard_widget",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "dashboard_id",
+        UUID(as_uuid=False),
+        ForeignKey("dashboard.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # 12-col grid position (locked Q1 in the DA-P3 design discussion).
+    # x ∈ [0, 12), w ∈ [1, 12]; y unbounded above; h ∈ [1, 12]. Service
+    # layer validates ranges + non-overlap.
+    Column("position_x", Integer, nullable=False, server_default=text("0")),
+    Column("position_y", Integer, nullable=False, server_default=text("0")),
+    Column("position_w", Integer, nullable=False, server_default=text("4")),
+    Column("position_h", Integer, nullable=False, server_default=text("2")),
+    Column(
+        "widget_type",
+        PgEnum(
+            DashboardWidgetTypeEnum,
+            name="dashboard_widget_type",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    Column("title", String(255), nullable=False),
+    Column("description", Text, nullable=True),
+    # data_binding: { connection_id, schema_name, sql, params? }
+    # viz_spec: { chart_type, x_axis, y_axis, series?, format?, ... }
+    # grounding_metadata: { tables[], columns[], curator, last_validated_at }
+    # All JSONB so we can partial-update specific keys without
+    # rewriting the blob and for fast JSONB-path queries.
+    Column("data_binding", JSONB, nullable=False),
+    Column("viz_spec", JSONB, nullable=False),
+    Column("grounding_metadata", JSONB, nullable=True),
+    # The build-chat message that proposed this widget. SET NULL on
+    # message purge (compliance) — the widget itself is the ground
+    # truth; chat history is the audit trail.
+    Column(
+        "created_by_message_id",
+        UUID(as_uuid=False),
+        ForeignKey("message.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    # Canonical render-time query — every dashboard load hits this.
+    Index("ix_dashboard_widget_dashboard", "dashboard_id"),
+)
+
+
+dashboard_link_token = Table(
+    "dashboard_link_token",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "dashboard_id",
+        UUID(as_uuid=False),
+        ForeignKey("dashboard.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # SHA-256 of the URL-safe token, hex-encoded (64 chars). The
+    # plaintext token materialises exactly once — in the response of
+    # the mint endpoint. From there on the DB only ever sees the hash;
+    # a DB read can confirm a presented token matches a stored row
+    # but cannot reconstruct the token. Same pattern Stripe / GitHub
+    # PATs use for API credential storage at rest.
+    Column("token_hash", String(64), nullable=False),
+    # First 8 chars of the URL-safe plaintext, kept in the clear for
+    # human identification in the share dialog ("link · xK4f2nM9").
+    # 8 chars of url-safe base64 ≈ 48 bits of identifier entropy —
+    # plenty for distinguishing a curator's own links, and gives away
+    # nothing usable about the full secret. Same idea as GitHub PAT
+    # list views showing ``ghp_xxxxXXXX``.
+    Column("token_short", String(12), nullable=False),
+    Column("expires_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("revoked_at", TIMESTAMP(timezone=True), nullable=True),
+    # WHO revoked it. NULL = un-revoked, or system-initiated revoke
+    # (future bg-job sweeper). SET NULL on user delete so the audit
+    # fact (this link was revoked at T) outlives the actor.
+    Column(
+        "revoked_by_user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "created_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # Bumped on every successful anonymous access — feeds the share
+    # dialog's "viewed N times" caption and the audit log.
+    Column(
+        "accessed_count",
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+    ),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+
+    # Temporal invariants. Cheap CHECK constraints that turn a class
+    # of service-bug ("we wrote an already-expired row") into a
+    # DB-level constraint error — production-grade defense-in-depth.
+    CheckConstraint(
+        "expires_at IS NULL OR expires_at > created_at",
+        name="ck_dashboard_link_token_expires_after_created",
+    ),
+    CheckConstraint(
+        "revoked_at IS NULL OR revoked_at >= created_at",
+        name="ck_dashboard_link_token_revoked_after_created",
+    ),
+
+    # Public viewer lookup — UNIQUE on the HASH. Hash collisions for
+    # SHA-256 are cryptographically improbable, but UNIQUE makes the
+    # invariant explicit at the schema level and the resolve path
+    # depends on it (single-row read on hash match).
+    Index(
+        "ux_dashboard_link_token_token_hash",
+        "token_hash",
+        unique=True,
+    ),
+    # Active-link partial index. The query that powers the Library's
+    # "Shared · N" pill JOIN is:
+    #
+    #     ... WHERE revoked_at IS NULL
+    #             AND (expires_at IS NULL OR expires_at > now())
+    #
+    # Postgres won't accept ``now()`` (STABLE, not IMMUTABLE) inside
+    # an index predicate, so the index filters on the immutable half
+    # only (``revoked_at IS NULL``) and the query layer applies the
+    # ``expires_at`` residual at scan time. Standard share-link
+    # pattern — Stripe API keys + GitHub PATs index this way.
+    # Replaces the v1 ``ix_dashboard_link_token_dashboard`` which
+    # covered every row including revoked ones.
+    Index(
+        "ix_dashboard_link_token_active",
+        "dashboard_id",
+        postgresql_where=text("revoked_at IS NULL"),
     ),
 )
