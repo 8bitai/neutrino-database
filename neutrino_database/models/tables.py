@@ -12,6 +12,8 @@ from neutrino_database.models.enums import (
     AllowedModuleEnum,
     ChatKindEnum,
     ConnectionStatus,
+    DAAccessEffectEnum,
+    DAAccessResourceTypeEnum,
     DAConnectionStatusEnum,
     DADescriptionScopeEnum,
     DADescriptionSourceEnum,
@@ -638,6 +640,19 @@ chat = Table(
 
     Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
     Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    # Workspace this chat thread belongs to (X-CHAT-WS-1). NOT NULL —
+    # every chat lives inside exactly one workspace. CASCADE so that
+    # deleting a workspace removes its chats (mirrors
+    # ``dashboard.workspace_id`` which is also CASCADE). Without this
+    # column the per-workspace list query has nothing to ground its
+    # authorization on, so a Tenant Admin in two workspaces sees the
+    # same threads in both — see X-CHAT-WS-1 for context.
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("created_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
     Column("title", String(255), nullable=True),
     Column("incognito", Boolean, nullable=False, server_default=text("false")),
@@ -674,7 +689,20 @@ chat = Table(
     Index("ix_chat_tenant_incognito", "tenant_id", "incognito"),
     Index("ix_chat_tenant_non_incognito", "tenant_id", postgresql_where=text("incognito = false")),
     Index("ix_chat_tenant_updated_at", "tenant_id", "updated_at"),
-    Index("ix_chat_created_by", "tenant_id", "created_by"),
+    # Per-user per-workspace list index (X-CHAT-WS-1). Keys exactly
+    # the FE's list query:
+    #   WHERE workspace_id = :ws AND created_by = :user
+    #         AND deleted_at IS NULL
+    #   ORDER BY updated_at DESC
+    # Partial on ``deleted_at IS NULL`` so soft-deleted rows don't
+    # bloat the index.
+    Index(
+        "ix_chat_workspace_created_by_updated_at",
+        "workspace_id",
+        "created_by",
+        text("updated_at DESC"),
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
 )
 
 message = Table(
@@ -2022,6 +2050,108 @@ workspace_da_settings = Table(
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# workspace_da_access_grant — per-member ACL projection (X-DA-ACL-1).
+#
+# One row per (workspace_id, user_id, resource_type, resource_id)
+# tuple. Stores explicit grants and denies on DA catalog resources
+# at any depth (schema / table / column). The absence of a row at a
+# given level means "inherit from parent" — resolution walks the
+# resource tree from leaf upward, applying the closest explicit
+# row. Resolution rule lives in the service (not the schema)
+# because it needs the catalog tree, but the storage shape is
+# minimal and indexed for the two UI read paths:
+#
+#   1. "All grants for member B in workspace W" → drives the
+#      member-summary view in workspace-settings/members.
+#   2. "All grants on resource R in workspace W" → drives the
+#      Access drawer when an admin clicks the chip on a catalog row.
+#
+# Tenant Owner / Tenant Admin / Workspace Admin bypass entirely via
+# the JWT projection — they never write grant rows against
+# themselves. M10 PII / Restricted hard-blocks layer above this
+# unconditionally.
+# ---------------------------------------------------------------------------
+
+workspace_da_access_grant = Table(
+    "workspace_da_access_grant",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+
+    # Which level of the catalog tree this grant targets. The
+    # ``resource_id`` column carries the catalog row's UUID matching
+    # the level (da_catalog_schema.id / da_catalog_table.id /
+    # da_catalog_column.id). We deliberately don't FK ``resource_id``
+    # to the three catalog tables — that would require a polymorphic
+    # FK shape (one column, three possible targets) which Postgres
+    # can't express natively. The service is responsible for
+    # validating resource_id belongs to a row of the matching type
+    # in the caller's workspace before insert.
+    Column(
+        "resource_type",
+        PgEnum(
+            DAAccessResourceTypeEnum,
+            name="da_access_resource_type",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    Column("resource_id", UUID(as_uuid=False), nullable=False),
+
+    # Explicit allow or deny. Inherit-from-parent is the *absence* of
+    # a row at this level — never stored.
+    Column(
+        "effect",
+        PgEnum(
+            DAAccessEffectEnum,
+            name="da_access_effect",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+
+    Column("created_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=False),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    # One effect per member per resource. Without this the UI couldn't
+    # decide what 'current state' means for a cell in the matrix.
+    UniqueConstraint(
+        "workspace_id",
+        "user_id",
+        "resource_type",
+        "resource_id",
+        name="ux_workspace_da_access_grant_member_resource",
+    ),
+    # Member-summary lookup ("what does Bob have access to?").
+    Index(
+        "ix_workspace_da_access_grant_workspace_user",
+        "workspace_id",
+        "user_id",
+    ),
+    # Resource-drawer lookup ("who has access to this column?").
+    Index(
+        "ix_workspace_da_access_grant_workspace_resource",
+        "workspace_id",
+        "resource_type",
+        "resource_id",
     ),
 )
 
