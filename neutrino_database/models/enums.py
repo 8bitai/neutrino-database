@@ -365,3 +365,68 @@ class DAAccessEffectEnum(str, Enum):
     """
     ALLOW = "allow"
     DENY = "deny"
+
+
+# ---------------------------------------------------------------------------
+# Unified integration hierarchy (WF-VS1) — the credential model shared across
+# ES + DA + WF. See product-feature-roadmap/workflow-execution §5a, §9.
+# ---------------------------------------------------------------------------
+
+
+class IntegrationOwnerKindEnum(str, Enum):
+    """Where an integration credential is owned.
+
+    There is deliberately no ``workspace`` tier — even a single-workspace
+    tenant defines at the tenant level and the workspace enables. The
+    CHECK constraint on ``integration`` ties this to the nullability of
+    ``owner_user_id`` / ``workspace_id``:
+
+      * ``tenant`` → owner_user_id IS NULL  AND workspace_id IS NULL
+      * ``user``   → owner_user_id NOT NULL AND workspace_id NOT NULL
+    """
+    TENANT = "tenant"
+    USER = "user"
+
+
+class IntegrationIdentityKindEnum(str, Enum):
+    """Who the destination SaaS sees when this credential is used.
+    Derived from the provider catalog at create time, never
+    client-supplied. Orthogonal to owner_kind."""
+    USER = "user"
+    APP = "app"
+    SERVICE_ACCOUNT = "service_account"
+
+
+class IntegrationAuthKindEnum(str, Enum):
+    """How the credential authenticates. ``api_key`` / ``basic`` need no
+    OAuth app registration (the member/tenant pastes a token);
+    ``oauth2`` requires a platform or BYO app (Level-1 registration)."""
+    OAUTH2 = "oauth2"
+    API_KEY = "api_key"
+    BASIC = "basic"
+    CUSTOM = "custom"
+
+
+class IntegrationStatusEnum(str, Enum):
+    """Lifecycle of an integration credential."""
+    ACTIVE = "active"
+    DISABLED = "disabled"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+
+class IntegrationEnablementStatusEnum(str, Enum):
+    """Lifecycle of a per-workspace enablement of a tenant integration.
+    Disabling pauses workspace use without revoking the underlying
+    tenant credential."""
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
+
+class IntegrationGrantEffectEnum(str, Enum):
+    """Two-state effect for an integration_member_grant row. Same
+    deny-wins-anywhere semantics as DAAccessEffectEnum, scoped to
+    integration capabilities. 'No row' = no explicit grant (default
+    deny for members; admins bypass via JWT projection)."""
+    ALLOW = "allow"
+    DENY = "deny"

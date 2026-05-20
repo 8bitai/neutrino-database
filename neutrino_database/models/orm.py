@@ -17,6 +17,12 @@ from neutrino_database.models.enums import (
     DashboardWidgetTypeEnum,
     ExcelDatasetStatus,
     IdpProviderEnum,
+    IntegrationAuthKindEnum,
+    IntegrationEnablementStatusEnum,
+    IntegrationGrantEffectEnum,
+    IntegrationIdentityKindEnum,
+    IntegrationOwnerKindEnum,
+    IntegrationStatusEnum,
     KeyStatusEnum,
     MemberSourceEnum,
     MessageRoleEnum,
@@ -1317,4 +1323,88 @@ class DashboardLinkToken(Base):
     revoked_by_user_id: Mapped[Optional[str]]
     created_by: Mapped[Optional[str]]
     accessed_count: Mapped[int]
+    created_at: Mapped[datetime]
+
+# ---------------------------------------------------------------------------
+# Unified integration hierarchy (WF-VS1).
+# ---------------------------------------------------------------------------
+
+
+class Integration(Base):
+    """Unified credential record shared across ES + DA + WF.
+
+    ONE row per credential. The Vault secret lives behind
+    ``vault_secret_id`` — never in this row. Established once at the
+    tenant level (owner_kind='tenant') or owned by an individual
+    (owner_kind='user'). ``identity_kind`` records who the destination
+    SaaS sees. ``capabilities`` (text[]) is the cross-pillar axis:
+    ES uses 'ingest', DA 'query', WF 'act'.
+    """
+
+    __table__ = tables.integration
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    owner_kind: Mapped[IntegrationOwnerKindEnum]
+    owner_user_id: Mapped[Optional[str]]
+    workspace_id: Mapped[Optional[str]]
+    provider: Mapped[str]
+    display_name: Mapped[str]
+    vault_secret_id: Mapped[str]
+    identity_kind: Mapped[IntegrationIdentityKindEnum]
+    identity_label: Mapped[Optional[str]]
+    auth_kind: Mapped[IntegrationAuthKindEnum]
+    oauth_scopes_granted: Mapped[Optional[List[str]]]
+    instance_url: Mapped[Optional[str]]
+    external_account_id: Mapped[Optional[str]]
+    external_account_name: Mapped[Optional[str]]
+    capabilities: Mapped[List[str]]
+    status: Mapped[IntegrationStatusEnum]
+    last_verified_at: Mapped[Optional[datetime]]
+    # NB: the JSONB ``metadata`` column is auto-instrumented from
+    # ``__table__``; we don't add a bare ``metadata`` annotation here
+    # because it would shadow SQLAlchemy's reserved Declarative attr.
+    created_by: Mapped[str]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class IntegrationWorkspaceEnablement(Base):
+    """Per-workspace opt-in for a tenant integration.
+
+    A tenant integration is unusable by a workspace until an enablement
+    row exists. ``capabilities_enabled`` is a subset of the parent
+    integration's capabilities (scope-down enforced in the service).
+    """
+
+    __table__ = tables.integration_workspace_enablement
+
+    id: Mapped[str]
+    integration_id: Mapped[str]
+    workspace_id: Mapped[str]
+    capabilities_enabled: Mapped[List[str]]
+    display_name_override: Mapped[Optional[str]]
+    status: Mapped[IntegrationEnablementStatusEnum]
+    enabled_by: Mapped[str]
+    enabled_at: Mapped[datetime]
+
+
+class IntegrationMemberGrant(Base):
+    """Per-member ACL on an integration capability (deny-wins-anywhere).
+
+    One row per ``(workspace_id, user_id, integration_id, capability)``.
+    Absence of a row = no explicit grant (default deny for members;
+    admins bypass via JWT projection). Resolution rule lives in the
+    service (mirrors ``WorkspaceDAAccessService``).
+    """
+
+    __table__ = tables.integration_member_grant
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    user_id: Mapped[str]
+    integration_id: Mapped[str]
+    capability: Mapped[str]
+    effect: Mapped[IntegrationGrantEffectEnum]
+    created_by: Mapped[str]
     created_at: Mapped[datetime]

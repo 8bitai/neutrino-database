@@ -28,6 +28,12 @@ from neutrino_database.models.enums import (
     ExcelDatasetStatus,
     FileProcessingStatusEnum,
     IdpProviderEnum,
+    IntegrationAuthKindEnum,
+    IntegrationEnablementStatusEnum,
+    IntegrationGrantEffectEnum,
+    IntegrationIdentityKindEnum,
+    IntegrationOwnerKindEnum,
+    IntegrationStatusEnum,
     KeyStatusEnum,
     MemberSourceEnum,
     MessageRoleEnum,
@@ -2685,4 +2691,268 @@ dashboard_link_token = Table(
         "dashboard_id",
         postgresql_where=text("revoked_at IS NULL"),
     ),
+)
+
+# ---------------------------------------------------------------------------
+# integration — unified credential record (WF-VS1).
+#
+# ONE row per credential, shared across all three pillars (ES via the
+# 'ingest' capability, DA via 'query', WF via 'act'). The Vault secret
+# lives behind ``vault_secret_id`` — the row NEVER carries the secret.
+#
+# Established once at the tenant level (owner_kind='tenant', the
+# corporate connector that workspaces enable) or owned by an individual
+# (owner_kind='user', the personal tier). The CHECK constraint enforces
+# the per-owner_kind invariant so a row can't be ambiguous about who
+# owns it. ``identity_kind`` (orthogonal) records who the destination
+# SaaS sees. See product-feature-roadmap/workflow-execution §5a, §9.
+# ---------------------------------------------------------------------------
+
+integration = Table(
+    "integration",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+
+    # Ownership tier. tenant → shared via enablement; user → personal.
+    Column(
+        "owner_kind",
+        PgEnum(
+            IntegrationOwnerKindEnum,
+            name="integration_owner_kind",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    # Set ONLY for owner_kind='user' (the personal owner). NULL for tenant.
+    Column(
+        "owner_user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
+    # Set ONLY for owner_kind='user' (the workspace the personal
+    # integration is attached to). NULL for tenant integrations — they
+    # aren't tied to one workspace; workspaces opt in via enablement.
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
+
+    Column("provider", String(64), nullable=False),
+    Column("display_name", String(255), nullable=False),
+    # Pointer into Vault. The credential itself never lives in this row.
+    Column("vault_secret_id", String(512), nullable=False),
+
+    # Who the destination SaaS sees when this credential is used.
+    Column(
+        "identity_kind",
+        PgEnum(
+            IntegrationIdentityKindEnum,
+            name="integration_identity_kind",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    Column("identity_label", String(255), nullable=True),
+
+    Column(
+        "auth_kind",
+        PgEnum(
+            IntegrationAuthKindEnum,
+            name="integration_auth_kind",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    # OAuth scopes actually granted (audit + capability derivation).
+    Column("oauth_scopes_granted", ARRAY(Text), nullable=True),
+    # e.g. Jira site URL — needed to build API calls for instance-scoped
+    # providers.
+    Column("instance_url", String(512), nullable=True),
+    # Provider account identity (Slack team_id, Jira cloud_id, etc.).
+    Column("external_account_id", String(255), nullable=True),
+    Column("external_account_name", String(255), nullable=True),
+
+    # The cross-pillar axis: which pillars may use this integration.
+    # Subset of {'ingest','query','act'} (stored as text[] to stay open
+    # to new capabilities without an enum migration).
+    Column("capabilities", ARRAY(Text), nullable=False),
+
+    Column(
+        "status",
+        PgEnum(
+            IntegrationStatusEnum,
+            name="integration_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'active'"),
+    ),
+    Column("last_verified_at", TIMESTAMP(timezone=True), nullable=True),
+    # Provider-specific non-secret extras. App-level validation forbids
+    # credential-shaped keys here.
+    Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+
+    Column(
+        "created_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=False,
+    ),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    # The owner_kind invariant — a row can't be ambiguous about who owns it.
+    CheckConstraint(
+        "(owner_kind = 'tenant' AND owner_user_id IS NULL AND workspace_id IS NULL) "
+        "OR (owner_kind = 'user' AND owner_user_id IS NOT NULL AND workspace_id IS NOT NULL)",
+        name="ck_integration_owner_kind_invariant",
+    ),
+    # A tenant can't connect the same provider account twice.
+    UniqueConstraint(
+        "tenant_id",
+        "provider",
+        "external_account_id",
+        name="ux_integration_tenant_provider_account",
+    ),
+    # "All integrations for tenant T of provider P" — the create/list path.
+    Index("ix_integration_tenant_provider", "tenant_id", "provider"),
+    # "My personal integrations" — the personal-tier list path.
+    Index("ix_integration_owner_user", "owner_user_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# integration_workspace_enablement — per-workspace opt-in (WF-VS1).
+#
+# A tenant integration is unusable by a workspace until an enablement
+# row exists. Enablement scopes capabilities DOWN (a subset of the
+# integration's capabilities — enforced in the service). Carries a
+# per-workspace display-name override and independent lifecycle so one
+# workspace can disable without affecting others.
+# ---------------------------------------------------------------------------
+
+integration_workspace_enablement = Table(
+    "integration_workspace_enablement",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "integration_id",
+        UUID(as_uuid=False),
+        ForeignKey("integration.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Subset of integration.capabilities granted to this workspace.
+    Column("capabilities_enabled", ARRAY(Text), nullable=False),
+    Column("display_name_override", String(255), nullable=True),
+    Column(
+        "status",
+        PgEnum(
+            IntegrationEnablementStatusEnum,
+            name="integration_enablement_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'active'"),
+    ),
+    Column(
+        "enabled_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=False,
+    ),
+    Column("enabled_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+
+    # A workspace enables a given tenant integration at most once.
+    UniqueConstraint(
+        "integration_id",
+        "workspace_id",
+        name="ux_integration_enablement_integration_workspace",
+    ),
+    # "What's enabled in workspace W" — the workspace integrations page.
+    Index("ix_integration_enablement_workspace", "workspace_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# integration_member_grant — per-member ACL (WF-VS1).
+#
+# Same cardinality/shape as workspace_da_access_grant: a flat
+# per-(member, integration, capability) grid with deny-wins-anywhere
+# resolution applied in the service. Default for a member is no access
+# (no row); admins bypass via the JWT projection. ``capability`` is
+# stored as text (includes the '*' wildcard) to stay open as
+# capabilities grow.
+# ---------------------------------------------------------------------------
+
+integration_member_grant = Table(
+    "integration_member_grant",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "integration_id",
+        UUID(as_uuid=False),
+        ForeignKey("integration.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # 'ingest' | 'query' | 'act' | '*' (wildcard = all capabilities).
+    Column("capability", String(32), nullable=False),
+    Column(
+        "effect",
+        PgEnum(
+            IntegrationGrantEffectEnum,
+            name="integration_grant_effect",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    Column(
+        "created_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=False,
+    ),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+
+    # One effect per member per integration per capability.
+    UniqueConstraint(
+        "workspace_id",
+        "user_id",
+        "integration_id",
+        "capability",
+        name="ux_integration_member_grant_member_integration_cap",
+    ),
+    # "All grants for member B in workspace W" — member-summary view.
+    Index("ix_integration_member_grant_workspace_user", "workspace_id", "user_id"),
+    # "Who can use integration I" — the integration members drawer.
+    Index("ix_integration_member_grant_integration", "integration_id"),
 )
