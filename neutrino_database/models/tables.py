@@ -34,6 +34,7 @@ from neutrino_database.models.enums import (
     IntegrationIdentityKindEnum,
     IntegrationOwnerKindEnum,
     IntegrationStatusEnum,
+    WorkflowStatusEnum,
     KeyStatusEnum,
     MemberSourceEnum,
     MessageRoleEnum,
@@ -2955,4 +2956,65 @@ integration_member_grant = Table(
     Index("ix_integration_member_grant_workspace_user", "workspace_id", "user_id"),
     # "Who can use integration I" — the integration members drawer.
     Index("ix_integration_member_grant_integration", "integration_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# workflow — workspace-scoped workflow definitions (WF-VS2).
+#
+# The Workflow Execution pillar's definition store: one row per workflow the
+# low-code builder produces. ``graph`` (JSONB) holds the node/edge definition
+# the GenericGraphWorkflow interprets; Temporal owns *execution* state (event
+# histories), this table owns the *definition*. created_by is metadata, not
+# ownership — a workflow is workspace-owned and outlives its author, so the FK
+# is SET NULL + nullable (unlike integration.created_by, which mismatches
+# nullability and ondelete; tracked as TD-WF-INTEGRATION-CREATED-BY).
+# ---------------------------------------------------------------------------
+
+workflow = Table(
+    "workflow",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+
+    Column("name", String(255), nullable=False),
+    Column("description", Text, nullable=True),
+
+    # The node/edge definition the GenericGraphWorkflow interprets.
+    Column("graph", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+
+    Column(
+        "status",
+        PgEnum(
+            WorkflowStatusEnum,
+            name="workflow_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'draft'"),
+    ),
+
+    Column(
+        "created_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    # "Workflows in workspace W of tenant T" — the builder list path.
+    Index("ix_workflow_tenant_workspace", "tenant_id", "workspace_id"),
 )

@@ -430,3 +430,22 @@ class IntegrationGrantEffectEnum(str, Enum):
     deny for members; admins bypass via JWT projection)."""
     ALLOW = "allow"
     DENY = "deny"
+
+
+# ---------------------------------------------------------------------------
+# Workflow Execution pillar (WF-VS2) — workflow definitions.
+# ---------------------------------------------------------------------------
+
+
+class WorkflowStatusEnum(str, Enum):
+    """Lifecycle of a workflow definition.
+
+    draft     — being built; not yet runnable on a schedule/trigger.
+    active    — live; may be triggered / run.
+    disabled  — paused without deletion (triggers won't fire).
+    archived  — retired; retained for audit, hidden from the builder.
+    """
+    DRAFT = "draft"
+    ACTIVE = "active"
+    DISABLED = "disabled"
+    ARCHIVED = "archived"

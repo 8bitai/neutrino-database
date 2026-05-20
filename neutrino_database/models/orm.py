@@ -34,6 +34,7 @@ from neutrino_database.models.enums import (
     SpanType,
     TenantStatusEnum,
     UserStatusEnum,
+    WorkflowStatusEnum,
     WorkspaceAccessStatusEnum,
     WorkspaceStatusEnum,
 )
@@ -1408,3 +1409,26 @@ class IntegrationMemberGrant(Base):
     effect: Mapped[IntegrationGrantEffectEnum]
     created_by: Mapped[str]
     created_at: Mapped[datetime]
+
+
+class Workflow(Base):
+    """Workspace-scoped workflow definition (WF-VS2).
+
+    The low-code builder's output. ``graph`` (JSONB) holds the node/edge
+    definition the GenericGraphWorkflow interprets at run time; Temporal owns
+    *execution* state, this row owns the *definition*. created_by is metadata
+    (SET NULL on user delete), not ownership — the workflow is workspace-owned.
+    """
+
+    __table__ = tables.workflow
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    workspace_id: Mapped[str]
+    name: Mapped[str]
+    description: Mapped[Optional[str]]
+    graph: Mapped[dict]
+    status: Mapped[WorkflowStatusEnum]
+    created_by: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
