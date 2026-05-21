@@ -1144,6 +1144,24 @@ class WorkspaceDASettings(Base):
     updated_at: Mapped[datetime]
 
 
+class WorkspaceIntegrationSettings(Base):
+    """Workspace-level connector governance policy (WF-CF-1b).
+
+    One row per workspace, lazy-created on first write; absence = defaults
+    (permissive, fail-safe). Cross-pillar — the workspace-admin switches that
+    gate how members use connectors here (e.g. whether personal connections
+    are allowed).
+    """
+
+    __table__ = tables.workspace_integration_settings
+
+    workspace_id: Mapped[str]
+    allow_personal_integrations: Mapped[bool]
+    allow_personal_scoped_workflows: Mapped[bool]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
 class WorkspaceDAAccessGrant(Base):
     """Per-member ACL row on a DA catalog resource (X-DA-ACL-1).
 

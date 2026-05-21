@@ -2062,6 +2062,55 @@ workspace_da_settings = Table(
 
 
 # ---------------------------------------------------------------------------
+# workspace_integration_settings — per-workspace connector governance policy
+# (WF-CF-1b). Cross-pillar (NOT DA-specific): the workspace-admin switches
+# that gate how members may use connectors here. One row per workspace,
+# lazy-created on first write; NO ROW = defaults (fail-safe = permissive,
+# matching workspace_da_settings).
+# ---------------------------------------------------------------------------
+workspace_integration_settings = Table(
+    "workspace_integration_settings",
+    metadata,
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    # Whether members may connect their own (personal) integrations here.
+    # Even when ON, a provider must also declare personal support in its
+    # catalog (owner_support) for a personal connect to be offered.
+    Column(
+        "allow_personal_integrations",
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    ),
+    # Whether a workflow whose derived scope is personal / per-member may run
+    # in this workspace (PRD §13). Declared now to avoid a re-migration.
+    Column(
+        "allow_personal_scoped_workflows",
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    ),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
 # workspace_da_access_grant — per-member ACL projection (X-DA-ACL-1).
 #
 # One row per (workspace_id, user_id, resource_type, resource_id)
