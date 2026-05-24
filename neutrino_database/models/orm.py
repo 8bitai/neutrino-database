@@ -4,13 +4,11 @@ from neutrino_database.models.enums import (
     ChatKindEnum,
     DAAccessEffectEnum,
     DAAccessResourceTypeEnum,
-    DAConnectionStatusEnum,
     DADescriptionScopeEnum,
     DADescriptionSourceEnum,
     DAJoinHintSourceEnum,
     DAJoinTypeEnum,
     DAMetricSourceEnum,
-    DASourceTypeEnum,
     DATableTypeEnum,
     DashboardStatusEnum,
     DashboardVisibilityEnum,
@@ -966,29 +964,6 @@ class TenancyOwnershipTransfer(Base):
 # in da_schemas.py — these ORM classes are for SQLAlchemy session use
 # (filters, inserts, joins) inside connector-service and agent-platform.
 # ===========================================================================
-
-
-class DAConnection(Base):
-    """Tenant-level DA Connection — one row per tenant warehouse credential.
-
-    Lifecycle CRUD owned by connector-service (feature.md F4). agent-platform
-    reads it to know which connection to call when running metadata sync /
-    SQL execution against the warehouse.
-    """
-
-    __table__ = tables.da_connection
-
-    id: Mapped[str]
-    tenant_id: Mapped[str]
-    source_type: Mapped[DASourceTypeEnum]
-    connection_name: Mapped[str]
-    credentials: Mapped[dict]  # KMS-wrapped JSONB
-    status: Mapped[DAConnectionStatusEnum]
-    # NULL = unrestricted; list[str] = tenant-allowed schema whitelist.
-    allowed_schemas: Mapped[Optional[list]]
-    created_by: Mapped[Optional[str]]
-    created_at: Mapped[datetime]
-    updated_at: Mapped[datetime]
 
 
 class DACatalogSchema(Base):
