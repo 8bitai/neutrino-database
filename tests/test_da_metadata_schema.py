@@ -233,14 +233,18 @@ class TestDACatalogSchemaTable:
 
     @pytest.mark.asyncio
     async def test_connection_fk_cascade(self, test_engine):
+        # DA-U2: DA connections moved onto the unified `integration` table, so
+        # the catalog's parent FK now targets `integration` (the column keeps
+        # its legacy name `da_connection_id` — rename deferred,
+        # TD-DA-CATALOG-COLNAME).
         fks = await _foreign_keys(test_engine, "da_catalog_schema")
         c_fk = [
             fk for fk in fks
             if "da_connection_id" in fk["constrained_columns"]
         ]
-        assert c_fk and c_fk[0]["referred_table"] == "da_connection"
+        assert c_fk and c_fk[0]["referred_table"] == "integration"
         assert _ondelete(c_fk[0]) == "CASCADE", (
-            "Deleting a connection must remove its catalog facts — they're "
+            "Deleting the integration must remove its catalog facts — they're "
             "meaningless without the credential that produced them."
         )
 

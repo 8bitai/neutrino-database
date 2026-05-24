@@ -1584,10 +1584,15 @@ da_catalog_schema = Table(
     metadata,
 
     Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    # DA-U2: DA connections now live on the unified `integration` table, so this
+    # FK targets `integration.id`. The column keeps its legacy name
+    # `da_connection_id` for now — renaming it to `integration_id` would cascade
+    # into the connector-service + agent-platform readers, so that's deferred to
+    # a coordinated cleanup once both are on integration (TD-DA-CATALOG-COLNAME).
     Column(
         "da_connection_id",
         UUID(as_uuid=False),
-        ForeignKey("da_connection.id", ondelete="CASCADE"),
+        ForeignKey("integration.id", ondelete="CASCADE"),
         nullable=False,
     ),
     Column("schema_name", String(255), nullable=False),
