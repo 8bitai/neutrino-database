@@ -1429,6 +1429,22 @@ class IntegrationMemberGrant(Base):
     created_at: Mapped[datetime]
 
 
+class IntegrationDAConfig(Base):
+    """DA capability's per-connection config — 1:1 with an integration (DA-U1).
+
+    Keeps the generic ``integration`` row free of pillar-specific columns:
+    the tenant schema allowlist (``allowed_schemas``) lives here. Replaces
+    ``da_connection.allowed_schemas``; NULL = unrestricted.
+    """
+
+    __table__ = tables.integration_da_config
+
+    integration_id: Mapped[str]
+    allowed_schemas: Mapped[Optional[list]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
 class Workflow(Base):
     """Workspace-scoped workflow definition (WF-VS2).
 

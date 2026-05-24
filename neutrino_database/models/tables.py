@@ -3009,6 +3009,42 @@ integration_member_grant = Table(
 
 
 # ---------------------------------------------------------------------------
+# integration_da_config — DA capability's per-connection config (DA-U1).
+#
+# The Data Analytics unification sidecar: DA warehouse connections live on the
+# unified `integration` table like every other connector, but the DA-specific
+# governance fact — the tenant schema allowlist — doesn't belong on the generic
+# row. It lives here, 1:1 with the integration (integration_id IS the PK).
+# Replaces da_connection.allowed_schemas; same NULL=unrestricted semantics.
+# Mirrors the shape a future integration_es_config will take for ingest.
+# ---------------------------------------------------------------------------
+
+integration_da_config = Table(
+    "integration_da_config",
+    metadata,
+
+    Column(
+        "integration_id",
+        UUID(as_uuid=False),
+        ForeignKey("integration.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    # Tenant-level schema allowlist (was da_connection.allowed_schemas):
+    #   NULL      → unrestricted; every warehouse schema is visible/queryable.
+    #   list[str] → allowlist; only these schemas surface + run via execute_query.
+    Column("allowed_schemas", JSONB, nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
 # workflow — workspace-scoped workflow definitions (WF-VS2).
 #
 # The Workflow Execution pillar's definition store: one row per workflow the
