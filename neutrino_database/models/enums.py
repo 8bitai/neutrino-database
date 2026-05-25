@@ -374,18 +374,21 @@ class DAAccessEffectEnum(str, Enum):
 
 
 class IntegrationOwnerKindEnum(str, Enum):
-    """Where an integration credential is owned.
-
-    There is deliberately no ``workspace`` tier — even a single-workspace
-    tenant defines at the tenant level and the workspace enables. The
-    CHECK constraint on ``integration`` ties this to the nullability of
+    """Where an integration credential is owned. Three tiers — a tenant
+    admin establishes corporate connections shared via enablement; a
+    workspace admin can also establish a connection their workspace owns
+    outright; any member can connect a personal credential. The CHECK
+    constraint on ``integration`` ties this to the nullability of
     ``owner_user_id`` / ``workspace_id``:
 
-      * ``tenant`` → owner_user_id IS NULL  AND workspace_id IS NULL
-      * ``user``   → owner_user_id NOT NULL AND workspace_id NOT NULL
+      * ``tenant``    → owner_user_id IS NULL  AND workspace_id IS NULL
+      * ``user``      → owner_user_id NOT NULL AND workspace_id NOT NULL
+      * ``workspace`` → owner_user_id IS NULL  AND workspace_id NOT NULL
+        (``workspace_id`` is the owning workspace)
     """
     TENANT = "tenant"
     USER = "user"
+    WORKSPACE = "workspace"
 
 
 class IntegrationIdentityKindEnum(str, Enum):

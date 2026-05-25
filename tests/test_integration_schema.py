@@ -209,9 +209,11 @@ class TestIntegrationEnums:
     @pytest.mark.asyncio
     async def test_owner_kind_enum_values(self, test_engine):
         values = await _enum_values(test_engine, "integration_owner_kind")
-        assert set(values) == {"tenant", "user"}, (
-            "integration_owner_kind must be tenant|user only — there is "
-            f"no workspace-owned tier. Got {values}"
+        assert set(values) == {"tenant", "user", "workspace"}, (
+            "integration_owner_kind must be tenant|user|workspace — "
+            "'workspace' is the workspace-owned tier (a workspace admin "
+            "establishes a connection their workspace owns). "
+            f"Got {values}"
         )
 
     @pytest.mark.asyncio

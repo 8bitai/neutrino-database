@@ -2709,9 +2709,10 @@ integration = Table(
         ForeignKey("user.id", ondelete="CASCADE"),
         nullable=True,
     ),
-    # Set ONLY for owner_kind='user' (the workspace the personal
-    # integration is attached to). NULL for tenant integrations — they
-    # aren't tied to one workspace; workspaces opt in via enablement.
+    # Set for owner_kind='user' (the workspace the personal integration is
+    # attached to) AND owner_kind='workspace' (the workspace that owns it).
+    # NULL for tenant integrations — they aren't tied to one workspace;
+    # workspaces opt in via enablement.
     Column(
         "workspace_id",
         UUID(as_uuid=False),
@@ -2784,9 +2785,13 @@ integration = Table(
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
 
     # The owner_kind invariant — a row can't be ambiguous about who owns it.
+    #   tenant    → owner_user_id NULL, workspace_id NULL (shared via enablement)
+    #   user      → owner_user_id SET,  workspace_id SET  (personal, in that ws)
+    #   workspace → owner_user_id NULL, workspace_id SET  (workspace owns it)
     CheckConstraint(
         "(owner_kind = 'tenant' AND owner_user_id IS NULL AND workspace_id IS NULL) "
-        "OR (owner_kind = 'user' AND owner_user_id IS NOT NULL AND workspace_id IS NOT NULL)",
+        "OR (owner_kind = 'user' AND owner_user_id IS NOT NULL AND workspace_id IS NOT NULL) "
+        "OR (owner_kind = 'workspace' AND owner_user_id IS NULL AND workspace_id IS NOT NULL)",
         name="ck_integration_owner_kind_invariant",
     ),
     # A tenant can't connect the same provider account twice.
