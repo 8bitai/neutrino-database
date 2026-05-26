@@ -452,3 +452,56 @@ class WorkflowStatusEnum(str, Enum):
     ACTIVE = "active"
     DISABLED = "disabled"
     ARCHIVED = "archived"
+
+
+class WorkflowRunStatusEnum(str, Enum):
+    """Lifecycle of a single workflow execution (one ``workflow_run`` row).
+
+    queued    — run row created; Temporal start in flight, not yet executing.
+    running   — at least one node has begun.
+    succeeded — every node completed without error.
+    failed    — a node failed (after retries) and aborted the run.
+    cancelled — explicitly cancelled by a user / admin.
+    """
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class WorkflowActorKindEnum(str, Enum):
+    """How a run was triggered — drives the identity/audit interpretation.
+
+    user           — a person clicked Run (manual). ``actor_user_id`` set.
+    cron           — a schedule fired; no actor (``audit_principal`` = author).
+    event          — an internal event fired the run.
+    webhook_auth   — an authenticated inbound webhook (actor from the JWT).
+    webhook_anon   — an anonymous inbound webhook; no actor.
+    fan_out_member — one iteration of a per-member cron fan-out (actor = member).
+
+    M1 only ever writes ``user``; the rest are defined now so M4/M5/M7 add no
+    enum migration.
+    """
+    USER = "user"
+    CRON = "cron"
+    EVENT = "event"
+    WEBHOOK_AUTH = "webhook_auth"
+    WEBHOOK_ANON = "webhook_anon"
+    FAN_OUT_MEMBER = "fan_out_member"
+
+
+class WorkflowRunStepStatusEnum(str, Enum):
+    """Lifecycle of a single executed node within a run (``workflow_run_step``).
+
+    pending   — recorded but not yet started.
+    running   — the node's activity is in flight.
+    succeeded — completed without error.
+    failed    — failed after exhausting retries.
+    skipped   — not executed (e.g. a branch not taken).
+    """
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED = "skipped"

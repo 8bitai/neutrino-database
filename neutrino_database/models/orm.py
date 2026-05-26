@@ -33,6 +33,9 @@ from neutrino_database.models.enums import (
     TenantStatusEnum,
     UserStatusEnum,
     WorkflowStatusEnum,
+    WorkflowRunStatusEnum,
+    WorkflowActorKindEnum,
+    WorkflowRunStepStatusEnum,
     WorkspaceAccessStatusEnum,
     WorkspaceStatusEnum,
 )
@@ -1441,3 +1444,60 @@ class Workflow(Base):
     created_by: Mapped[Optional[str]]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
+
+
+class WorkflowRun(Base):
+    """One workflow execution (WF-M1) — the governance record of a run.
+
+    Captures who triggered the run (``actor_user_id`` / ``actor_kind``, with
+    ``audit_principal_user_id`` always set), when (``created_at`` =
+    triggered, ``started_at`` = execution began) and the total duration to
+    ``finished_at``. ``workflow_version_id`` / ``trigger_id`` are unconstrained
+    UUIDs until M6 / M4 add their tables. Temporal owns the step-by-step event
+    history; this row + ``WorkflowRunStep`` are the queryable, auditable record.
+    """
+
+    __table__ = tables.workflow_run
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    workspace_id: Mapped[str]
+    workflow_id: Mapped[str]
+    workflow_version_id: Mapped[Optional[str]]
+    trigger_id: Mapped[Optional[str]]
+    status: Mapped[WorkflowRunStatusEnum]
+    actor_user_id: Mapped[Optional[str]]
+    actor_kind: Mapped[WorkflowActorKindEnum]
+    audit_principal_user_id: Mapped[str]
+    temporal_run_id: Mapped[Optional[str]]
+    trigger_payload: Mapped[Optional[dict]]
+    error_message: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    started_at: Mapped[Optional[datetime]]
+    finished_at: Mapped[Optional[datetime]]
+
+
+class WorkflowRunStep(Base):
+    """One executed node within a run (WF-M1) — its I/O, status, and timing.
+
+    ``input_json`` / ``output_json`` hold the node's full payloads (the record
+    of truth, redacted per the action's pii_fields in M8); ``attempts`` exposes
+    the Temporal retry count; ``started_at`` / ``finished_at`` give the per-node
+    time taken. Cascade-deleted with its parent run.
+    """
+
+    __table__ = tables.workflow_run_step
+
+    id: Mapped[str]
+    run_id: Mapped[str]
+    step_id: Mapped[str]
+    node_kind: Mapped[str]
+    status: Mapped[WorkflowRunStepStatusEnum]
+    input_json: Mapped[Optional[dict]]
+    output_json: Mapped[Optional[dict]]
+    attempts: Mapped[int]
+    pii_classification: Mapped[Optional[List[str]]]
+    error_message: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    started_at: Mapped[Optional[datetime]]
+    finished_at: Mapped[Optional[datetime]]

@@ -35,6 +35,9 @@ from neutrino_database.models.enums import (
     IntegrationOwnerKindEnum,
     IntegrationStatusEnum,
     WorkflowStatusEnum,
+    WorkflowRunStatusEnum,
+    WorkflowActorKindEnum,
+    WorkflowRunStepStatusEnum,
     KeyStatusEnum,
     MemberSourceEnum,
     MessageRoleEnum,
@@ -3029,4 +3032,115 @@ workflow = Table(
 
     # "Workflows in workspace W of tenant T" — the builder list path.
     Index("ix_workflow_tenant_workspace", "tenant_id", "workspace_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# Workflow Execution pillar (WF-M1) — the run record.
+#
+# A workflow becomes runnable + auditable here. ``workflow_run`` is one row per
+# execution (who triggered, when, total duration, outcome); ``workflow_run_step``
+# is one row per node per execution (its input, output, status, attempts, and
+# time taken). Full node payloads live in ``workflow_run_step`` — the record of
+# truth, redactable per pii_fields — and audit_log only references them.
+# ---------------------------------------------------------------------------
+
+workflow_run = Table(
+    "workflow_run",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+
+    # Denormalised scope (mirrors workflow) so tenant/workspace audit roll-ups
+    # don't need a join. Both cascade with their parent.
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+    Column("workflow_id", UUID(as_uuid=False), ForeignKey("workflow.id", ondelete="CASCADE"), nullable=False),
+
+    # Plain UUIDs for now — the version/trigger tables (M6/M4) don't exist yet,
+    # so those slices add the FK constraint, not the column.
+    Column("workflow_version_id", UUID(as_uuid=False), nullable=True),
+    Column("trigger_id", UUID(as_uuid=False), nullable=True),
+
+    Column(
+        "status",
+        PgEnum(
+            WorkflowRunStatusEnum,
+            name="workflow_run_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'queued'"),
+    ),
+
+    # Who triggered THIS run. The actor is absent for cron / anonymous webhook
+    # (SET NULL); the audit principal is always known — author for cron, actor
+    # otherwise — and is RESTRICT, never nulled, so the audit chain holds.
+    Column("actor_user_id", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+    Column(
+        "actor_kind",
+        PgEnum(
+            WorkflowActorKindEnum,
+            name="workflow_actor_kind",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    Column("audit_principal_user_id", UUID(as_uuid=False), ForeignKey("user.id", ondelete="RESTRICT"), nullable=False),
+
+    Column("temporal_run_id", Text, nullable=True),
+    Column("trigger_payload", JSONB, nullable=True),
+    Column("error_message", Text, nullable=True),
+
+    # created = when triggered; started = when execution began; finished = end.
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("started_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("finished_at", TIMESTAMP(timezone=True), nullable=True),
+
+    # Run-history list path: runs of a workflow, newest first.
+    Index("ix_workflow_run_workflow_created", "workflow_id", "created_at"),
+    # Tenant/workspace governance roll-up.
+    Index("ix_workflow_run_tenant_workspace", "tenant_id", "workspace_id"),
+)
+
+
+workflow_run_step = Table(
+    "workflow_run_step",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column("run_id", UUID(as_uuid=False), ForeignKey("workflow_run.id", ondelete="CASCADE"), nullable=False),
+
+    # Node identity within the run's graph.
+    Column("step_id", Text, nullable=False),
+    Column("node_kind", Text, nullable=False),
+
+    Column(
+        "status",
+        PgEnum(
+            WorkflowRunStepStatusEnum,
+            name="workflow_run_step_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'pending'"),
+    ),
+
+    # Full node input/output — the record of truth (redacted per pii_fields in M8).
+    Column("input_json", JSONB, nullable=True),
+    Column("output_json", JSONB, nullable=True),
+
+    # Temporal retry count for this node.
+    Column("attempts", Integer, nullable=False, server_default=text("0")),
+
+    # Which pii_fields redaction flags were applied (filled in M8).
+    Column("pii_classification", ARRAY(Text), nullable=True),
+    Column("error_message", Text, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("started_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("finished_at", TIMESTAMP(timezone=True), nullable=True),
+
+    # Steps of a run — the per-run inspector path.
+    Index("ix_workflow_run_step_run", "run_id"),
 )
