@@ -38,6 +38,8 @@ from neutrino_database.models.enums import (
     WorkflowRunStatusEnum,
     WorkflowActorKindEnum,
     WorkflowRunStepStatusEnum,
+    WorkflowTriggerKindEnum,
+    WorkflowTriggerStatusEnum,
     KeyStatusEnum,
     MemberSourceEnum,
     MessageRoleEnum,
@@ -3057,10 +3059,16 @@ workflow_run = Table(
     Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
     Column("workflow_id", UUID(as_uuid=False), ForeignKey("workflow.id", ondelete="CASCADE"), nullable=False),
 
-    # Plain UUIDs for now — the version/trigger tables (M6/M4) don't exist yet,
-    # so those slices add the FK constraint, not the column.
+    # workflow_version_id stays a bare UUID until M6 adds workflow_version.
     Column("workflow_version_id", UUID(as_uuid=False), nullable=True),
-    Column("trigger_id", UUID(as_uuid=False), nullable=True),
+    # trigger_id now references workflow_trigger (M3a.2). SET NULL — deleting a
+    # trigger keeps the run history, just unlinks it.
+    Column(
+        "trigger_id",
+        UUID(as_uuid=False),
+        ForeignKey("workflow_trigger.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
 
     Column(
         "status",
@@ -3143,4 +3151,73 @@ workflow_run_step = Table(
 
     # Steps of a run — the per-run inspector path.
     Index("ix_workflow_run_step_run", "run_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# Workflow Execution pillar (WF-M3a.2) — triggers.
+#
+# A stored trigger is how a workflow fires WITHOUT a manual Run click. A webhook
+# trigger carries a unique ``token`` whose public URL (POST /triggers/{token})
+# starts a run with the request body as the trigger node's payload; cron/event
+# triggers carry their settings in ``config``. ``node_id`` binds the trigger to
+# the trigger node in the workflow's graph.
+# ---------------------------------------------------------------------------
+
+workflow_trigger = Table(
+    "workflow_trigger",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+
+    # Denormalised scope (mirrors workflow) — cascades with its parents.
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+    Column("workflow_id", UUID(as_uuid=False), ForeignKey("workflow.id", ondelete="CASCADE"), nullable=False),
+
+    # The trigger node in the graph this binds to.
+    Column("node_id", Text, nullable=False),
+
+    Column(
+        "kind",
+        PgEnum(
+            WorkflowTriggerKindEnum,
+            name="workflow_trigger_kind",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+
+    # Public webhook token (unguessable) — null for cron/event. Unique so the
+    # public fire path resolves the workflow in one indexed lookup.
+    Column("token", Text, nullable=True),
+
+    # Kind-specific settings (cron expression, webhook auth mode, …).
+    Column("config", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+
+    Column(
+        "status",
+        PgEnum(
+            WorkflowTriggerStatusEnum,
+            name="workflow_trigger_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'active'"),
+    ),
+
+    Column("created_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    # Triggers of a workflow — the builder + management list path.
+    Index("ix_workflow_trigger_workflow", "workflow_id"),
+    # O(1) public webhook resolution; partial so multiple token-less (cron) rows
+    # don't collide on NULL.
+    Index(
+        "uq_workflow_trigger_token",
+        "token",
+        unique=True,
+        postgresql_where=text("token IS NOT NULL"),
+    ),
 )

@@ -505,3 +505,26 @@ class WorkflowRunStepStatusEnum(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     SKIPPED = "skipped"
+
+
+class WorkflowTriggerKindEnum(str, Enum):
+    """How a stored trigger fires a workflow (manual isn't stored — it's the
+    Run button).
+
+    webhook — a public token URL is POSTed to; the request body is the payload.
+    cron    — a schedule fires it (config holds the cron expression). [M4]
+    event   — an internal event fires it (config names the event). [later]
+    """
+    WEBHOOK = "webhook"
+    CRON = "cron"
+    EVENT = "event"
+
+
+class WorkflowTriggerStatusEnum(str, Enum):
+    """Whether a trigger is live.
+
+    active   — armed; will fire.
+    disabled — paused without deletion (webhook URL 409s, schedule won't fire).
+    """
+    ACTIVE = "active"
+    DISABLED = "disabled"

@@ -36,6 +36,8 @@ from neutrino_database.models.enums import (
     WorkflowRunStatusEnum,
     WorkflowActorKindEnum,
     WorkflowRunStepStatusEnum,
+    WorkflowTriggerKindEnum,
+    WorkflowTriggerStatusEnum,
     WorkspaceAccessStatusEnum,
     WorkspaceStatusEnum,
 )
@@ -1501,3 +1503,29 @@ class WorkflowRunStep(Base):
     created_at: Mapped[datetime]
     started_at: Mapped[Optional[datetime]]
     finished_at: Mapped[Optional[datetime]]
+
+
+class WorkflowTrigger(Base):
+    """How a workflow fires without a manual Run click (WF-M3a.2).
+
+    A webhook trigger carries a unique ``token`` whose public URL
+    (``POST /triggers/{token}``) starts a run with the request body as the
+    trigger node's payload; cron/event triggers carry their settings in
+    ``config``. ``node_id`` binds the trigger to the trigger node in the
+    workflow's graph. Cascade-deleted with its workflow.
+    """
+
+    __table__ = tables.workflow_trigger
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    workspace_id: Mapped[str]
+    workflow_id: Mapped[str]
+    node_id: Mapped[str]
+    kind: Mapped[WorkflowTriggerKindEnum]
+    token: Mapped[Optional[str]]
+    config: Mapped[dict]
+    status: Mapped[WorkflowTriggerStatusEnum]
+    created_by: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
