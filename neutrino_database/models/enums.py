@@ -401,20 +401,33 @@ class IntegrationOwnerKindEnum(str, Enum):
 class IntegrationIdentityKindEnum(str, Enum):
     """Who the destination SaaS sees when this credential is used.
     Derived from the provider catalog at create time, never
-    client-supplied. Orthogonal to owner_kind."""
+    client-supplied. Orthogonal to owner_kind.
+
+    ``none`` is reserved for local-only sources (member uploads a PDF /
+    CSV) where there is no remote destination, so the "identity the
+    destination sees" question doesn't apply. Introduced in
+    UC-ES-DB-1.A when collapsing legacy ``datasources`` onto
+    ``integration``."""
     USER = "user"
     APP = "app"
     SERVICE_ACCOUNT = "service_account"
+    NONE = "none"
 
 
 class IntegrationAuthKindEnum(str, Enum):
     """How the credential authenticates. ``api_key`` / ``basic`` need no
     OAuth app registration (the member/tenant pastes a token);
-    ``oauth2`` requires a platform or BYO app (Level-1 registration)."""
+    ``oauth2`` requires a platform or BYO app (Level-1 registration).
+
+    ``none`` is reserved for sources that don't authenticate against a
+    remote system at all (member uploads a PDF directly into ES). When
+    ``auth_kind == 'none'``, ``vault_secret_id`` is also NULL (no
+    credential to vault). Introduced in UC-ES-DB-1.A."""
     OAUTH2 = "oauth2"
     API_KEY = "api_key"
     BASIC = "basic"
     CUSTOM = "custom"
+    NONE = "none"
 
 
 class IntegrationStatusEnum(str, Enum):

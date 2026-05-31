@@ -153,14 +153,19 @@ class TestIntegrationColumns:
     async def test_not_null_columns(self, test_engine):
         cols = await _columns(test_engine, "integration")
         # The columns that must always be present to make the row
-        # meaningful: who owns it (tenant), what it is, where the
-        # secret lives, how it auths, what it can do, its lifecycle.
+        # meaningful: who owns it (tenant), what it is, how it auths,
+        # what it can do, its lifecycle.
+        #
+        # UC-ES-DB-1.A relaxed vault_secret_id to NULLABLE so local-only
+        # sources (auth_kind='none', e.g. member uploads a PDF) can sit
+        # on this table without a placeholder secret. The NULLABLE check
+        # for vault_secret_id lives below in
+        # ``test_vault_secret_id_is_nullable``.
         for non_null in (
             "tenant_id",
             "owner_kind",
             "provider",
             "display_name",
-            "vault_secret_id",
             "identity_kind",
             "auth_kind",
             "capabilities",
@@ -170,6 +175,16 @@ class TestIntegrationColumns:
             assert cols[non_null]["nullable"] is False, (
                 f"{non_null} must be NOT NULL on integration"
             )
+
+    @pytest.mark.asyncio
+    async def test_vault_secret_id_is_nullable(self, test_engine):
+        """UC-ES-DB-1.A — vault_secret_id is NULLABLE so auth_kind='none'
+        rows (local upload sources) can omit the secret pointer."""
+        cols = await _columns(test_engine, "integration")
+        assert cols["vault_secret_id"]["nullable"] is True, (
+            "vault_secret_id must be NULLABLE after UC-ES-DB-1.A — see "
+            "alembic e2f3a4b5c6d7."
+        )
 
     @pytest.mark.asyncio
     async def test_owner_user_id_and_workspace_id_nullable(self, test_engine):
@@ -219,16 +234,20 @@ class TestIntegrationEnums:
     @pytest.mark.asyncio
     async def test_identity_kind_enum_values(self, test_engine):
         values = await _enum_values(test_engine, "integration_identity_kind")
-        assert set(values) == {"user", "app", "service_account"}, (
-            "integration_identity_kind must be user|app|service_account; "
+        # 'none' added in UC-ES-DB-1.A for local upload sources where
+        # there is no remote destination → no identity it would see.
+        assert set(values) == {"user", "app", "service_account", "none"}, (
+            "integration_identity_kind must be user|app|service_account|none; "
             f"got {values}"
         )
 
     @pytest.mark.asyncio
     async def test_auth_kind_enum_values(self, test_engine):
         values = await _enum_values(test_engine, "integration_auth_kind")
-        assert set(values) == {"oauth2", "api_key", "basic", "custom"}, (
-            "integration_auth_kind must be oauth2|api_key|basic|custom; "
+        # 'none' added in UC-ES-DB-1.A for sources that don't
+        # authenticate against a remote system (member-uploaded files).
+        assert set(values) == {"oauth2", "api_key", "basic", "custom", "none"}, (
+            "integration_auth_kind must be oauth2|api_key|basic|custom|none; "
             f"got {values}"
         )
 

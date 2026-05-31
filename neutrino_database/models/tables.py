@@ -63,7 +63,16 @@ files = Table(
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
     Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
-    Column("datasource_id", UUID(as_uuid=True), ForeignKey("datasources.id"), nullable=False),
+    # UC-ES-DB-1.B — repointed from datasources.id onto integration.id
+    # as part of collapsing the legacy connector schema onto the
+    # canonical integration table. Every file belongs to an integration
+    # (member upload via auth_kind='none', or an OAuth source).
+    Column(
+        "integration_id",
+        UUID(as_uuid=True),
+        ForeignKey("integration.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
 
     Column("external_file_info", JSONB, nullable=True, comment="Stores file_id and drive_id of external sources, e.g., SharePoint"),
@@ -191,21 +200,6 @@ file_processing_state = Table(
         "next_retry_at",
         postgresql_where=text("next_retry_at IS NOT NULL"),
     ),
-)
-
-
-datasources = Table(
-    "datasources",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
-    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
-    Column("name", String, nullable=False),
-    Column("type", String, nullable=False),
-    Column("config", JSONB, nullable=True),
-    Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
-    Column("updated_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()),
 )
 
 
@@ -360,64 +354,6 @@ strategies = Table(
     Column("is_deleted", Boolean, nullable=False, server_default=text("false")),
 )
 
-
-connector_types = Table(
-    "connector_types",
-    metadata,
-
-    Column("id", String(100), primary_key=True),
-    Column("display_name", String(255)),
-    Column("category", String(100)),
-    Column("auth_type", String(50)),
-    # Note: config_schema removed - it's now stored in Connection model as it's tenant-specific
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
-)
-
-
-connections = Table(
-    "connections",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", UUID(as_uuid=True), nullable=False),
-    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
-    Column("connector_type_id", String(100), ForeignKey("connector_types.id"), nullable=False),
-    Column("connection_name", String(255), nullable=False, server_default=text("'default'")),
-    Column("status", PgEnum(ConnectionStatus), nullable=False, server_default=ConnectionStatus.active.name),
-    Column("created_by", String(255)),
-    Column("config_schema", Text),  # Workspace-specific configuration (e.g., SharePoint webUrl)
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
-
-    Index("ix_connection_workspace", "workspace_id"),
-    Index(
-        "ux_connection_tenant_workspace_type_name_active",
-        "tenant_id",
-        "workspace_id",
-        "connector_type_id",
-        "connection_name",
-        unique=True,
-        postgresql_where=text("status != 'revoked'"),
-    ),
-)
-
-
-credentials = Table(
-    "credentials",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("connection_id", UUID(as_uuid=True), ForeignKey("connections.id"), nullable=False),
-    Column("resource", String(100), nullable=False),
-    Column("access_token_encrypted", Text),
-    Column("access_token_expires_at", TIMESTAMP(timezone=True)),
-    Column("refresh_token_encrypted", Text),
-    Column("scopes_or_resource", Text),
-    Column("metadata", Text),  # Column name is "metadata" in DB
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
-)
 
 lock_lease = Table(
     "mutex_locks",
@@ -2450,7 +2386,10 @@ integration = Table(
     Column("provider", String(64), nullable=False),
     Column("display_name", String(255), nullable=False),
     # Pointer into Vault. The credential itself never lives in this row.
-    Column("vault_secret_id", String(512), nullable=False),
+    # NULLABLE so local-only sources (auth_kind='none', e.g. member
+    # uploads a PDF) can be stored without a placeholder secret.
+    # UC-ES-DB-1.A — was NOT NULL before the ES upload collapse.
+    Column("vault_secret_id", String(512), nullable=True),
 
     # Who the destination SaaS sees when this credential is used.
     Column(

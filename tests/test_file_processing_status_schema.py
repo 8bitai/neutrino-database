@@ -29,24 +29,31 @@ from sqlalchemy.exc import IntegrityError
 
 from neutrino_database.models.enums import FileProcessingStatusEnum
 from neutrino_database.models.tables import (
-    datasources,
-    file_processing_state,
     files,
+    file_processing_state,
+    integration,
     tenant,
+    user as user_table,
     workspace,
 )
 
 
 # ---------------------------------------------------------------------------
-# Fixture: a parent (tenant + workspace + datasource + file) so the FK
-# chain is satisfied. Each test cleans up via try/finally.
+# Fixture: a parent (tenant + workspace + user + integration + file) so
+# the FK chain is satisfied. Each test cleans up via try/finally.
+#
+# UC-ES-DB-1.B+.E collapsed the legacy ``datasources`` table onto
+# ``integration``; the seed now creates a tenant-owned integration with
+# ``auth_kind='none'`` (the local-upload shape that replaced ``MANUAL``
+# datasource rows) and points the file at it.
 # ---------------------------------------------------------------------------
 
 
 async def _seed_tenant_workspace_file(conn, *, file_status: str = "pending"):
     tenant_id = str(uuid.uuid4())
     workspace_id = str(uuid.uuid4())
-    datasource_id = uuid.uuid4()
+    user_id = str(uuid.uuid4())
+    integration_id = str(uuid.uuid4())
     file_id = uuid.uuid4()
 
     await conn.execute(
@@ -64,12 +71,25 @@ async def _seed_tenant_workspace_file(conn, *, file_status: str = "pending"):
         )
     )
     await conn.execute(
-        insert(datasources).values(
-            id=datasource_id,
-            tenant_id=uuid.UUID(tenant_id),
-            workspace_id=uuid.UUID(workspace_id),
-            name="t7-ds",
-            type="manual",
+        insert(user_table).values(
+            id=user_id,
+            tenant_id=tenant_id,
+            email=f"t7-{uuid.uuid4()}@test.local",
+        )
+    )
+    await conn.execute(
+        insert(integration).values(
+            id=integration_id,
+            tenant_id=tenant_id,
+            workspace_id=None,
+            provider="manual_upload",
+            display_name="t7-manual",
+            vault_secret_id=None,
+            owner_kind="tenant",
+            identity_kind="none",
+            auth_kind="none",
+            capabilities=["ingest"],
+            created_by=user_id,
         )
     )
     await conn.execute(
@@ -77,7 +97,7 @@ async def _seed_tenant_workspace_file(conn, *, file_status: str = "pending"):
             id=file_id,
             tenant_id=uuid.UUID(tenant_id),
             workspace_id=uuid.UUID(workspace_id),
-            datasource_id=datasource_id,
+            integration_id=uuid.UUID(integration_id),
             original_filename="t7.pdf",
             file_type="pdf",
             storage_uri="s3://t7-bucket/t7.pdf",
