@@ -35,11 +35,18 @@ class UserStatusEnum(str, Enum):
 class IdpProviderEnum(str, Enum):
     AZURE_AD = "AZURE_AD"
     GOOGLE_IDENTITY = "GOOGLE_IDENTITY"
+    # Synthetic provider for password-authed users. There is no external
+    # IdP, so the Neutrino user_id IS the stable provider_user_id within
+    # this namespace. Lets every Neutrino user have an addressable Member
+    # row in OpenFGA Store B regardless of how they signed in
+    # (X-MEMBER-BRIDGE-1).
+    NEUTRINO_LOCAL = "NEUTRINO_LOCAL"
 
 class MemberSourceEnum(str, Enum):
     """How we discovered this member"""
     SSO_LOGIN = "SSO_LOGIN"              # User logged in via UI/Teams
     FILE_PERMISSIONS = "FILE_PERMISSIONS"  # From file permission sync
+    LOCAL_LOGIN = "LOCAL_LOGIN"          # User logged in via local password
 
 
 class FileProcessingStatusEnum(str, Enum):
