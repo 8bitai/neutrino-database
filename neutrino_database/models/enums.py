@@ -417,13 +417,32 @@ class IntegrationIdentityKindEnum(str, Enum):
 class IntegrationAuthKindEnum(str, Enum):
     """How the credential authenticates. ``api_key`` / ``basic`` need no
     OAuth app registration (the member/tenant pastes a token);
-    ``oauth2`` requires a platform or BYO app (Level-1 registration).
+    ``oauth2`` / ``oauth2_app_only`` require a platform or BYO app
+    (Level-1 registration).
+
+    Two distinct OAuth flows — they look similar at the catalog layer
+    but have very different security shapes, so the SOC2 evidence chain
+    ("how did this credential authenticate?") records them separately:
+
+      * ``oauth2``          — delegated authorization-code grant.
+                               The user signs in via popup; the
+                               credential acts AS that user. Refresh
+                               token rotates per user. Identity kind
+                               = ``user``.
+      * ``oauth2_app_only`` — client-credentials grant. The app
+                               authenticates as itself; needs admin
+                               pre-grant on the destination (e.g.
+                               SharePoint Sites.Selected). No user
+                               involvement at credential-mint time.
+                               Identity kind = ``app``. Added in
+                               UC-ES-DB-1.D.1e.
 
     ``none`` is reserved for sources that don't authenticate against a
     remote system at all (member uploads a PDF directly into ES). When
     ``auth_kind == 'none'``, ``vault_secret_id`` is also NULL (no
     credential to vault). Introduced in UC-ES-DB-1.A."""
     OAUTH2 = "oauth2"
+    OAUTH2_APP_ONLY = "oauth2_app_only"
     API_KEY = "api_key"
     BASIC = "basic"
     CUSTOM = "custom"

@@ -246,9 +246,22 @@ class TestIntegrationEnums:
         values = await _enum_values(test_engine, "integration_auth_kind")
         # 'none' added in UC-ES-DB-1.A for sources that don't
         # authenticate against a remote system (member-uploaded files).
-        assert set(values) == {"oauth2", "api_key", "basic", "custom", "none"}, (
-            "integration_auth_kind must be oauth2|api_key|basic|custom|none; "
-            f"got {values}"
+        # 'oauth2_app_only' added in UC-ES-DB-1.D.1e to distinguish the
+        # client-credentials grant (app authenticates as itself, e.g.
+        # SharePoint Sites.Selected) from the standard delegated
+        # authorization-code grant ('oauth2'). They have very different
+        # security shapes — the SOC2 evidence chain ("how did this
+        # credential authenticate?") MUST disambiguate them.
+        assert set(values) == {
+            "oauth2",
+            "oauth2_app_only",
+            "api_key",
+            "basic",
+            "custom",
+            "none",
+        }, (
+            "integration_auth_kind must be oauth2|oauth2_app_only|api_key|"
+            f"basic|custom|none; got {values}"
         )
 
     @pytest.mark.asyncio
