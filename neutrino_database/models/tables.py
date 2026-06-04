@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Table, Column, Integer, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
+    Table, Column, Integer, SmallInteger, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
     UniqueConstraint, Numeric, DDL, event, CheckConstraint
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, INET
@@ -27,6 +27,7 @@ from neutrino_database.models.enums import (
     DashboardWidgetTypeEnum,
     ExcelDatasetStatus,
     FileProcessingStatusEnum,
+    FileSourceTypeEnum,
     IdpProviderEnum,
     IntegrationAuthKindEnum,
     IntegrationEnablementStatusEnum,
@@ -77,12 +78,58 @@ files = Table(
 
     Column("external_file_info", JSONB, nullable=True, comment="Stores file_id and drive_id of external sources, e.g., SharePoint"),
 
-    # File info
-    Column("original_filename", String, nullable=False),
-    Column("file_type", String(20), nullable=False),
-    Column("storage_uri", Text, nullable=False),
-    Column("file_size_bytes", BigInteger, nullable=False),
-    Column("file_sha256", String(64), nullable=False),
+    # File-source info — nullable since CANON-DOC-1 unified files with
+    # record-source connectors (Jira issues / Confluence pages / Slack
+    # messages have none of these). File-source rows still populate them.
+    Column("original_filename", String, nullable=True),
+    Column("file_type", String(20), nullable=True),
+    Column("storage_uri", Text, nullable=True),
+    Column("file_size_bytes", BigInteger, nullable=True),
+    Column("file_sha256", String(64), nullable=True),
+
+    # ── CanonicalDocument shape (CANON-DOC-1) ────────────────────────
+    # See product-feature-roadmap/enterprise-search/unified-doc-parse-chunk.md.
+    Column(
+        "source_type",
+        PgEnum(
+            FileSourceTypeEnum,
+            name="file_source_type",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'file'"),
+        comment="CanonicalDocument source kind. Drives chunker regime + citation card + ranking.",
+    ),
+    Column("source_url", Text, nullable=False, server_default=text("''")),
+    Column("container_id", String(255), nullable=False, server_default=text("''")),
+    Column("container_name", Text, nullable=False, server_default=text("''")),
+    Column("breadcrumb", JSONB, nullable=True),
+    Column("language", String(10), nullable=True),
+    Column(
+        "parent_doc_id",
+        UUID(as_uuid=True),
+        ForeignKey("files.id", ondelete="CASCADE"),
+        nullable=True,
+        comment="Self-FK for comments / replies / attachments; cascade delete.",
+    ),
+    Column("facets", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column(
+        "display_metadata",
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+        comment="Display-only bag (named display_metadata to avoid SA MetaData clash).",
+    ),
+    Column("title", Text, nullable=True),
+    Column(
+        "viewers",
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+        comment="Serialized ViewerSet — source of truth for ACL. Default {} = default-deny.",
+    ),
+    Column("acl_extractor_version", SmallInteger, nullable=True),
+    Column("acl_extracted_at", TIMESTAMP(timezone=True), nullable=True),
 
     # Legacy free-form status (kept for backwards compatibility; deprecated
     # in favour of `processing_status` below — see TD-DOC-2).
@@ -123,6 +170,13 @@ files = Table(
     # Per-workspace + status filter is the dominant FE/admin query shape
     # ("show me failed files in this workspace").
     Index("ix_files_workspace_processing_status", "workspace_id", "processing_status"),
+
+    # Parent → children lookup (chat agent rebuilds threads from chunks).
+    Index(
+        "ix_files_parent_doc_id",
+        "parent_doc_id",
+        postgresql_where=text("parent_doc_id IS NOT NULL"),
+    ),
 )
 
 

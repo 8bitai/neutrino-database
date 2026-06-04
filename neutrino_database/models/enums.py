@@ -80,6 +80,34 @@ class FileProcessingStatusEnum(str, Enum):
     FAILED = "failed"
     DELETED = "deleted"
 
+
+class FileSourceTypeEnum(str, Enum):
+    """CanonicalDocument source kind (CANON-DOC-1).
+
+    Closed vocabulary from ``product-feature-roadmap/enterprise-search/
+    unified-doc-parse-chunk.md``. Drives chunking regime (long-form
+    regime A vs short-record regime B), citation card layout, ranking
+    weights (recency matters more for `message`/`issue` than `file`),
+    and chat-UI filter chips.
+
+    New kinds require an alembic migration; the framework relies on
+    this being exhaustive at the type level.
+    """
+
+    FILE = "file"
+    ISSUE = "issue"
+    PULL_REQUEST = "pull_request"
+    COMMIT = "commit"
+    PAGE = "page"
+    RECORD = "record"
+    MESSAGE = "message"
+    EMAIL = "email"
+    EVENT = "event"
+    COMMENT = "comment"
+    ATTACHMENT = "attachment"
+    TICKET = "ticket"
+
+
 class MessageRoleEnum(str, Enum):
     USER = "USER"
     ASSISTANT = "ASSISTANT"
