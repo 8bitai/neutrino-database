@@ -31,6 +31,7 @@ from neutrino_database.models.enums import (
     IdpProviderEnum,
     IntegrationAuthKindEnum,
     IntegrationEnablementStatusEnum,
+    IntegrationSyncJobStatusEnum,
     IntegrationGrantEffectEnum,
     IntegrationIdentityKindEnum,
     IntegrationOwnerKindEnum,
@@ -2652,6 +2653,89 @@ integration_member_grant = Table(
     Index("ix_integration_member_grant_workspace_user", "workspace_id", "user_id"),
     # "Who can use integration I" — the integration members drawer.
     Index("ix_integration_member_grant_integration", "integration_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# integration_sync_job — one record-source sync run (RECORD-SYNC-TEMPORAL-1).
+#
+# Top-level row for an ES-Ingestion RecordSourceSyncWorkflow execution.
+# The workflow heartbeats indexed_count / error_count / pages_completed.
+# Per-doc progress lives on the ``files`` row (processing_status), same
+# shape as file-source — so Indexed Content polls files for line-items
+# and this table for run-level rollup ("synced 1234 issues across 25
+# pages, 3 errors, completed 2m ago").
+# ---------------------------------------------------------------------------
+
+integration_sync_job = Table(
+    "integration_sync_job",
+    metadata,
+
+    Column(
+        "id",
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    ),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "integration_id",
+        UUID(as_uuid=False),
+        ForeignKey("integration.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Per-provider unit id (Jira project key, Confluence space key, ...).
+    # Opaque here; the per-provider connector primitive interprets it.
+    Column("container_id", String(255), nullable=False),
+    Column(
+        "status",
+        PgEnum(
+            IntegrationSyncJobStatusEnum,
+            name="integration_sync_job_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'pending'"),
+    ),
+    # Temporal handles. workflow_id is the deterministic key
+    # (``sync:{job_id}`` — same shape as ``file:{file_id}``);
+    # run_id is Temporal-assigned per attempt.
+    Column("temporal_workflow_id", String(255), nullable=True),
+    Column("temporal_run_id", String(255), nullable=True),
+    Column("indexed_count", Integer, nullable=False, server_default=text("0")),
+    Column("error_count", Integer, nullable=False, server_default=text("0")),
+    Column("pages_completed", Integer, nullable=False, server_default=text("0")),
+    Column(
+        "started_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id"),
+        nullable=False,
+    ),
+    Column("started_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("last_heartbeat_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("completed_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("error_detail", JSONB, nullable=True),
+
+    # "what's running right now?" — the Indexed Content polling query.
+    Index("ix_integration_sync_job_workspace_status", "workspace_id", "status"),
+    # "last sync for (integration, container)" — Content Sources card stamp.
+    Index(
+        "ix_integration_sync_job_integration_container_started",
+        "integration_id",
+        "container_id",
+        text("started_at DESC"),
+    ),
 )
 
 

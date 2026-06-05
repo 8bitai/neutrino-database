@@ -493,6 +493,22 @@ class IntegrationEnablementStatusEnum(str, Enum):
     DISABLED = "disabled"
 
 
+class IntegrationSyncJobStatusEnum(str, Enum):
+    """Lifecycle of one record-source sync run (RECORD-SYNC-TEMPORAL-1).
+    Driven by ES-Ingestion's ``RecordSourceSyncWorkflow``:
+
+      pending → running → succeeded | failed | cancelled
+
+    Mirrors the file-source side's ``ingestion_job_status`` shape so
+    Indexed Content can render run-level rollup identically for either
+    ingestion path."""
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class IntegrationGrantEffectEnum(str, Enum):
     """Two-state effect for an integration_member_grant row. Same
     deny-wins-anywhere semantics as DAAccessEffectEnum, scoped to
