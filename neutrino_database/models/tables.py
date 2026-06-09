@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Table, Column, Integer, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
+    Table, Column, Integer, SmallInteger, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
     UniqueConstraint, Numeric, DDL, event, CheckConstraint
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, INET
@@ -27,7 +27,21 @@ from neutrino_database.models.enums import (
     DashboardWidgetTypeEnum,
     ExcelDatasetStatus,
     FileProcessingStatusEnum,
+    FileSourceTypeEnum,
     IdpProviderEnum,
+    IntegrationAuthKindEnum,
+    IntegrationEnablementStatusEnum,
+    IntegrationSyncJobStatusEnum,
+    IntegrationGrantEffectEnum,
+    IntegrationIdentityKindEnum,
+    IntegrationOwnerKindEnum,
+    IntegrationStatusEnum,
+    WorkflowStatusEnum,
+    WorkflowRunStatusEnum,
+    WorkflowActorKindEnum,
+    WorkflowRunStepStatusEnum,
+    WorkflowTriggerKindEnum,
+    WorkflowTriggerStatusEnum,
     KeyStatusEnum,
     MemberSourceEnum,
     MessageRoleEnum,
@@ -51,17 +65,72 @@ files = Table(
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
     Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
-    Column("datasource_id", UUID(as_uuid=True), ForeignKey("datasources.id"), nullable=False),
+    # UC-ES-DB-1.B — repointed from datasources.id onto integration.id
+    # as part of collapsing the legacy connector schema onto the
+    # canonical integration table. Every file belongs to an integration
+    # (member upload via auth_kind='none', or an OAuth source).
+    Column(
+        "integration_id",
+        UUID(as_uuid=True),
+        ForeignKey("integration.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
 
     Column("external_file_info", JSONB, nullable=True, comment="Stores file_id and drive_id of external sources, e.g., SharePoint"),
 
-    # File info
-    Column("original_filename", String, nullable=False),
-    Column("file_type", String(20), nullable=False),
-    Column("storage_uri", Text, nullable=False),
-    Column("file_size_bytes", BigInteger, nullable=False),
-    Column("file_sha256", String(64), nullable=False),
+    # File-source info — nullable since CANON-DOC-1 unified files with
+    # record-source connectors (Jira issues / Confluence pages / Slack
+    # messages have none of these). File-source rows still populate them.
+    Column("original_filename", String, nullable=True),
+    Column("file_type", String(20), nullable=True),
+    Column("storage_uri", Text, nullable=True),
+    Column("file_size_bytes", BigInteger, nullable=True),
+    Column("file_sha256", String(64), nullable=True),
+
+    # ── CanonicalDocument shape (CANON-DOC-1) ────────────────────────
+    # See product-feature-roadmap/enterprise-search/unified-doc-parse-chunk.md.
+    Column(
+        "source_type",
+        PgEnum(
+            FileSourceTypeEnum,
+            name="file_source_type",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'file'"),
+        comment="CanonicalDocument source kind. Drives chunker regime + citation card + ranking.",
+    ),
+    Column("source_url", Text, nullable=False, server_default=text("''")),
+    Column("container_id", String(255), nullable=False, server_default=text("''")),
+    Column("container_name", Text, nullable=False, server_default=text("''")),
+    Column("breadcrumb", JSONB, nullable=True),
+    Column("language", String(10), nullable=True),
+    Column(
+        "parent_doc_id",
+        UUID(as_uuid=True),
+        ForeignKey("files.id", ondelete="CASCADE"),
+        nullable=True,
+        comment="Self-FK for comments / replies / attachments; cascade delete.",
+    ),
+    Column("facets", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column(
+        "display_metadata",
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+        comment="Display-only bag (named display_metadata to avoid SA MetaData clash).",
+    ),
+    Column("title", Text, nullable=True),
+    Column(
+        "viewers",
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+        comment="Serialized ViewerSet — source of truth for ACL. Default {} = default-deny.",
+    ),
+    Column("acl_extractor_version", SmallInteger, nullable=True),
+    Column("acl_extracted_at", TIMESTAMP(timezone=True), nullable=True),
 
     # Legacy free-form status (kept for backwards compatibility; deprecated
     # in favour of `processing_status` below — see TD-DOC-2).
@@ -102,6 +171,13 @@ files = Table(
     # Per-workspace + status filter is the dominant FE/admin query shape
     # ("show me failed files in this workspace").
     Index("ix_files_workspace_processing_status", "workspace_id", "processing_status"),
+
+    # Parent → children lookup (chat agent rebuilds threads from chunks).
+    Index(
+        "ix_files_parent_doc_id",
+        "parent_doc_id",
+        postgresql_where=text("parent_doc_id IS NOT NULL"),
+    ),
 )
 
 
@@ -179,21 +255,6 @@ file_processing_state = Table(
         "next_retry_at",
         postgresql_where=text("next_retry_at IS NOT NULL"),
     ),
-)
-
-
-datasources = Table(
-    "datasources",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
-    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
-    Column("name", String, nullable=False),
-    Column("type", String, nullable=False),
-    Column("config", JSONB, nullable=True),
-    Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
-    Column("updated_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()),
 )
 
 
@@ -348,64 +409,6 @@ strategies = Table(
     Column("is_deleted", Boolean, nullable=False, server_default=text("false")),
 )
 
-
-connector_types = Table(
-    "connector_types",
-    metadata,
-
-    Column("id", String(100), primary_key=True),
-    Column("display_name", String(255)),
-    Column("category", String(100)),
-    Column("auth_type", String(50)),
-    # Note: config_schema removed - it's now stored in Connection model as it's tenant-specific
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
-)
-
-
-connections = Table(
-    "connections",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", UUID(as_uuid=True), nullable=False),
-    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
-    Column("connector_type_id", String(100), ForeignKey("connector_types.id"), nullable=False),
-    Column("connection_name", String(255), nullable=False, server_default=text("'default'")),
-    Column("status", PgEnum(ConnectionStatus), nullable=False, server_default=ConnectionStatus.active.name),
-    Column("created_by", String(255)),
-    Column("config_schema", Text),  # Workspace-specific configuration (e.g., SharePoint webUrl)
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
-
-    Index("ix_connection_workspace", "workspace_id"),
-    Index(
-        "ux_connection_tenant_workspace_type_name_active",
-        "tenant_id",
-        "workspace_id",
-        "connector_type_id",
-        "connection_name",
-        unique=True,
-        postgresql_where=text("status != 'revoked'"),
-    ),
-)
-
-
-credentials = Table(
-    "credentials",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("connection_id", UUID(as_uuid=True), ForeignKey("connections.id"), nullable=False),
-    Column("resource", String(100), nullable=False),
-    Column("access_token_encrypted", Text),
-    Column("access_token_expires_at", TIMESTAMP(timezone=True)),
-    Column("refresh_token_encrypted", Text),
-    Column("scopes_or_resource", Text),
-    Column("metadata", Text),  # Column name is "metadata" in DB
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
-)
 
 lock_lease = Table(
     "mutex_locks",
@@ -1000,284 +1003,6 @@ excel_datasets = Table(
 )
 
 
-log_connectors = Table(
-    "log_connectors",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
-    Column("connector_name", String(255), nullable=False),
-    Column("connector_type", String(50), nullable=False, server_default=text("'elasticsearch'")),
-    Column("config", JSONB, nullable=False),
-    Column("status", String(50), nullable=False, server_default=text("'active'")),
-    Column("last_cursor", JSONB, nullable=True),
-
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
-
-    Index("ix_log_connectors_tenant", "tenant_id"),
-    Index("ix_log_connectors_tenant_type", "tenant_id", "connector_type"),
-)
-
-
-log_field_mappings = Table(
-    "log_field_mappings",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("connector_id", UUID(as_uuid=True), ForeignKey("log_connectors.id", ondelete="CASCADE"), nullable=False),
-    Column("mapping_name", String(255), nullable=False),
-    Column("field_mappings", JSONB, nullable=False),
-    Column("is_default", Boolean, nullable=False, server_default=text("false")),
-
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
-
-    Index("ix_log_field_mappings_connector", "connector_id"),
-    Index("ix_log_field_mappings_connector_default", "connector_id", "is_default"),
-)
-
-
-ingested_logs = Table(
-    "ingested_logs",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("connector_id", UUID(as_uuid=True), ForeignKey("log_connectors.id", ondelete="CASCADE"), nullable=False),
-    Column("raw_document", JSONB, nullable=False),
-    Column("normalized_document", JSONB, nullable=False),
-    Column("field_mapping_used", JSONB, nullable=False),
-    Column("source_index", String(255), nullable=False),
-    Column("source_doc_id", String(255), nullable=False),
-    Column("log_timestamp", TIMESTAMP(timezone=True), nullable=False),
-    Column("ingested_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
-
-    UniqueConstraint("connector_id", "source_doc_id", name="ux_ingested_logs_connector_doc"),
-    Index("ix_ingested_logs_connector_ingested", "connector_id", "ingested_at"),
-    Index("ix_ingested_logs_connector_timestamp", "connector_id", "log_timestamp"),
-)
-
-
-ai_ops_remedies = Table(
-    "ai_ops_remedies",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
-    Column("incident_id", String(255), nullable=True),
-    Column("team", String(255), nullable=True),
-    Column("priority", String(50), nullable=True),
-    Column("incident_title", String(500), nullable=False),
-    Column("summary", Text, nullable=True),
-    Column("root_cause", Text, nullable=True),
-    Column("email_subject", String(500), nullable=True),
-    Column("status", String(50), nullable=False, server_default=text("'active'")),
-    Column("incident_timestamp", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
-    Column("remedy", JSONB, nullable=True),
-    Column("correlation_key", String(255), nullable=True),
-
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
-
-    Index("ix_ai_ops_remedies_tenant", "tenant_id"),
-    Index("ix_ai_ops_remedies_tenant_status", "tenant_id", "status"),
-    Index("ix_ai_ops_remedies_tenant_timestamp", "tenant_id", "incident_timestamp"),
-    Index(
-        "ux_ai_ops_remedies_tenant_corr_key",
-        "tenant_id",
-        "correlation_key",
-        unique=True,
-        postgresql_where=text("status = 'active' AND correlation_key IS NOT NULL"),
-    ),
-)
-
-
-ai_ops_approvals = Table(
-    "ai_ops_approvals",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
-    Column("remedy_id", UUID(as_uuid=True), ForeignKey("ai_ops_remedies.id", ondelete="CASCADE"), nullable=False),
-    Column("decision", String(50), nullable=False),  # overall: "pending" | "approved" | "declined"
-    Column("decided_at", TIMESTAMP(timezone=True), nullable=True),  # set only when decision transitions to approved/declined
-    Column("channel", String(50), nullable=True),  # last channel that acted (kept for compat)
-    Column("approved_by", String(500), nullable=True),
-
-    Column("app_decision", String(50), nullable=True),   # "approved" | "declined" | null
-    Column("app_decided_at", TIMESTAMP(timezone=True), nullable=True),
-    Column("email_decision", String(50), nullable=True),  # "approved" | "declined" | null
-    Column("email_decided_at", TIMESTAMP(timezone=True), nullable=True),
-
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
-
-    UniqueConstraint("remedy_id", name="uq_ai_ops_approvals_remedy"),
-    Index("ix_ai_ops_approvals_tenant", "tenant_id"),
-    Index("ix_ai_ops_approvals_remedy", "remedy_id"),
-)
-
-
-ai_ops_sops = Table(
-    "ai_ops_sops",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
-    Column("name", String(500), nullable=False),
-    Column("content", Text, nullable=True),
-    Column("document_url", String(1000), nullable=True),
-
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
-
-    Index("ix_ai_ops_sops_tenant", "tenant_id"),
-)
-
-
-ai_ops_workflows = Table(
-    "ai_ops_workflows",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
-    Column("remedy_id", UUID(as_uuid=True), ForeignKey("ai_ops_remedies.id", ondelete="CASCADE"), nullable=False),
-    Column("approval_id", UUID(as_uuid=True), ForeignKey("ai_ops_approvals.id", ondelete="CASCADE"), nullable=False),
-    Column("status", String(50), nullable=False, server_default=text("'approved'")),
-    Column("trigger_text", Text, nullable=True),
-    Column("objective", Text, nullable=True),
-    Column("steps", JSONB, nullable=True),
-
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
-
-    UniqueConstraint("remedy_id", name="uq_ai_ops_workflows_remedy"),
-    Index("ix_ai_ops_workflows_tenant", "tenant_id"),
-    Index("ix_ai_ops_workflows_remedy", "remedy_id"),
-)
-
-
-ai_ops_workflow_definitions = Table(
-    "ai_ops_workflow_definitions",
-    metadata,
-
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
-    Column("name", String(255), nullable=False),
-    Column("sop_id", UUID(as_uuid=True), ForeignKey("ai_ops_sops.id", ondelete="SET NULL"), nullable=True),
-    Column("trigger_condition", Text, nullable=True),
-    Column("activepieces_flow_name", String(500), nullable=True),
-    Column("status", String(50), nullable=False, server_default=text("'active'")),
-
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
-
-    UniqueConstraint("tenant_id", "name", name="uq_ai_ops_wf_defs_tenant_name"),
-    Index("ix_ai_ops_wf_defs_tenant", "tenant_id"),
-)
-
-
-# ---------------------------------------------------------------------------
-# Underwriting tables
-# Managed by neutrino-database Alembic; used by connector-service AP flows.
-# ---------------------------------------------------------------------------
-
-underwriting_sessions = Table(
-    "underwriting_sessions",
-    metadata,
-
-    Column("session_id", Text, primary_key=True),
-    Column("application_id", Text, nullable=False),
-    Column("applicant_name", Text, nullable=True),
-    Column("email", Text, nullable=True),
-    Column("address", Text, nullable=True),
-    Column("loan_product", Text, nullable=True),
-    Column("loan_amount", Numeric, nullable=True),
-    Column("loan_tenure_months", Integer, nullable=True),
-    Column("monthly_income", Numeric, nullable=True),
-    Column("employer_name", Text, nullable=True),
-    Column("loan_purpose", Text, nullable=True),
-    Column("dti_threshold", Numeric, nullable=True, server_default=text("50")),
-    Column("status", Text, nullable=True),
-    Column("tenant_id", Text, nullable=True),
-    Column("chat_started_at", TIMESTAMP(timezone=True), nullable=True),
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
-)
-
-
-underwriting_conversation_history = Table(
-    "underwriting_conversation_history",
-    metadata,
-
-    Column("id", BigInteger, primary_key=True, autoincrement=True),
-    Column("session_id", Text, ForeignKey("underwriting_sessions.session_id", ondelete="CASCADE"), nullable=False),
-    Column("turn_index", Integer, nullable=False),
-    Column("role", Text, nullable=False),
-    Column("message", Text, nullable=True),
-    Column("message_type", Text, nullable=True),
-    Column("conversation_state", Text, nullable=True),
-    Column("metadata", JSONB, nullable=True),
-
-    UniqueConstraint("session_id", "turn_index", name="uq_conversation_history_session_turn"),
-    Index("ix_conversation_history_session", "session_id"),
-)
-
-
-underwriting_session_documents = Table(
-    "underwriting_session_documents",
-    metadata,
-
-    Column("id", BigInteger, primary_key=True, autoincrement=True),
-    Column("session_id", Text, ForeignKey("underwriting_sessions.session_id", ondelete="CASCADE"), nullable=False),
-    Column("doc_type", Text, nullable=False),
-    Column("minio_key", Text, nullable=True),
-    Column("minio_url", Text, nullable=True),
-    Column("extracted_text", Text, nullable=True),
-    Column("validation_status", Text, nullable=True),
-    Column("uploaded_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
-    Column("validated_at", TIMESTAMP(timezone=True), nullable=True),
-
-    UniqueConstraint("session_id", "doc_type", name="uq_session_documents_session_doctype"),
-    Index("ix_session_documents_session", "session_id"),
-)
-
-
-underwriting_pipeline_results = Table(
-    "underwriting_pipeline_results",
-    metadata,
-
-    Column("id", BigInteger, primary_key=True, autoincrement=True),
-    Column("session_id", Text, ForeignKey("underwriting_sessions.session_id", ondelete="CASCADE"), nullable=False),
-    Column("flow_name", Text, nullable=False),
-    Column("status", Text, nullable=True),
-    Column("result_json", JSONB, nullable=True),
-    Column("error_message", Text, nullable=True),
-    Column("started_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
-    Column("completed_at", TIMESTAMP(timezone=True), nullable=True),
-
-    UniqueConstraint("session_id", "flow_name", name="uq_pipeline_results_session_flow"),
-    Index("ix_pipeline_results_session", "session_id"),
-)
-
-
-underwriting_rules = Table(
-    "underwriting_rules",
-    metadata,
-
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("name", Text, nullable=False),
-    Column("description", Text, nullable=True),
-    Column("category", Text, nullable=True),
-    Column("severity", Text, nullable=True, server_default=text("'medium'")),
-    Column("condition", Text, nullable=True),
-    Column("threshold", Text, nullable=True),
-    Column("enabled", Boolean, nullable=True, server_default=text("true")),
-    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
-    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=True),
-)
-
-
 # ---------------------------------------------------------------------------
 # audit_log — append-only compliance event store (NEU-1804, slice C3a).
 #
@@ -1477,89 +1202,6 @@ tenancy_ownership_transfer = Table(
 # of conflation called out in feature.md F4.
 # ---------------------------------------------------------------------------
 
-da_connection = Table(
-    "da_connection",
-    metadata,
-
-    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
-    Column(
-        "tenant_id",
-        UUID(as_uuid=False),
-        ForeignKey("tenant.id", ondelete="CASCADE"),
-        nullable=False,
-    ),
-    Column(
-        "source_type",
-        PgEnum(
-            DASourceTypeEnum,
-            name="da_source_type",
-            values_callable=lambda enum: [e.value for e in enum],
-        ),
-        nullable=False,
-    ),
-    Column("connection_name", String(255), nullable=False),
-    # KMS-wrapped credentials blob. JSONB so the adapter can pack arbitrary
-    # shape (password vs key-pair vs service-account JSON). PII-tagged so
-    # the C6 anonymization runner finds it.
-    Column(
-        "credentials",
-        JSONB,
-        nullable=False,
-        comment="pii:credentials",
-    ),
-    Column(
-        "status",
-        PgEnum(
-            DAConnectionStatusEnum,
-            name="da_connection_status",
-            values_callable=lambda enum: [e.value for e in enum],
-        ),
-        nullable=False,
-        server_default=text("'pending_auth'"),
-    ),
-    # Tenant-level schema allowlist (NEU-1811 DA-P1f).
-    #   NULL          → unrestricted; workspace admins see every schema
-    #                   the warehouse exposes.
-    #   list[str]     → whitelist; only these schemas are visible to
-    #                   workspace admins and queryable via execute_query.
-    # Enforced at the connector-service adapter / endpoint layer; this
-    # column is the source-of-truth.
-    Column("allowed_schemas", JSONB, nullable=True),
-    # SET NULL so a user erasure (GDPR Art 17) doesn't take the connection
-    # down with the actor row.
-    Column(
-        "created_by",
-        UUID(as_uuid=False),
-        ForeignKey("user.id", ondelete="SET NULL"),
-        nullable=True,
-    ),
-    Column(
-        "created_at",
-        TIMESTAMP(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    ),
-    Column(
-        "updated_at",
-        TIMESTAMP(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    ),
-
-    # Uniqueness scope per data-flow.md §1: "unique among that tenant's
-    # <source> connections". Cross-source name collisions are fine.
-    Index(
-        "ux_da_connection_tenant_source_name",
-        "tenant_id",
-        "source_type",
-        "connection_name",
-        unique=True,
-    ),
-    Index("ix_da_connection_tenant", "tenant_id"),
-)
-
-
 # ---------------------------------------------------------------------------
 # da_catalog_schema / da_catalog_table / da_catalog_column — tenant-level
 # facts about what's in the warehouse (DA-P1g refactor).
@@ -1577,10 +1219,15 @@ da_catalog_schema = Table(
     metadata,
 
     Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    # DA-U2: DA connections now live on the unified `integration` table, so this
+    # FK targets `integration.id`. The column keeps its legacy name
+    # `da_connection_id` for now — renaming it to `integration_id` would cascade
+    # into the connector-service + agent-platform readers, so that's deferred to
+    # a coordinated cleanup once both are on integration (TD-DA-CATALOG-COLNAME).
     Column(
         "da_connection_id",
         UUID(as_uuid=False),
-        ForeignKey("da_connection.id", ondelete="CASCADE"),
+        ForeignKey("integration.id", ondelete="CASCADE"),
         nullable=False,
     ),
     Column("schema_name", String(255), nullable=False),
@@ -2038,6 +1685,55 @@ workspace_da_settings = Table(
         server_default=text("true"),
     ),
 
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# workspace_integration_settings — per-workspace connector governance policy
+# (WF-CF-1b). Cross-pillar (NOT DA-specific): the workspace-admin switches
+# that gate how members may use connectors here. One row per workspace,
+# lazy-created on first write; NO ROW = defaults (fail-safe = permissive,
+# matching workspace_da_settings).
+# ---------------------------------------------------------------------------
+workspace_integration_settings = Table(
+    "workspace_integration_settings",
+    metadata,
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    # Whether members may connect their own (personal) integrations here.
+    # Even when ON, a provider must also declare personal support in its
+    # catalog (owner_support) for a personal connect to be offered.
+    Column(
+        "allow_personal_integrations",
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    ),
+    # Whether a workflow whose derived scope is personal / per-member may run
+    # in this workspace (PRD §13). Declared now to avoid a re-migration.
+    Column(
+        "allow_personal_scoped_workflows",
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    ),
     Column(
         "created_at",
         TIMESTAMP(timezone=True),
@@ -2684,5 +2380,643 @@ dashboard_link_token = Table(
         "ix_dashboard_link_token_active",
         "dashboard_id",
         postgresql_where=text("revoked_at IS NULL"),
+    ),
+)
+
+# ---------------------------------------------------------------------------
+# integration — unified credential record (WF-VS1).
+#
+# ONE row per credential, shared across all three pillars (ES via the
+# 'ingest' capability, DA via 'query', WF via 'act'). The Vault secret
+# lives behind ``vault_secret_id`` — the row NEVER carries the secret.
+#
+# Established once at the tenant level (owner_kind='tenant', the
+# corporate connector that workspaces enable) or owned by an individual
+# (owner_kind='user', the personal tier). The CHECK constraint enforces
+# the per-owner_kind invariant so a row can't be ambiguous about who
+# owns it. ``identity_kind`` (orthogonal) records who the destination
+# SaaS sees. See product-feature-roadmap/workflow-execution §5a, §9.
+# ---------------------------------------------------------------------------
+
+integration = Table(
+    "integration",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+
+    # Ownership tier. tenant → shared via enablement; user → personal.
+    Column(
+        "owner_kind",
+        PgEnum(
+            IntegrationOwnerKindEnum,
+            name="integration_owner_kind",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    # Set ONLY for owner_kind='user' (the personal owner). NULL for tenant.
+    Column(
+        "owner_user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
+    # Set for owner_kind='user' (the workspace the personal integration is
+    # attached to) AND owner_kind='workspace' (the workspace that owns it).
+    # NULL for tenant integrations — they aren't tied to one workspace;
+    # workspaces opt in via enablement.
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
+
+    Column("provider", String(64), nullable=False),
+    Column("display_name", String(255), nullable=False),
+    # Pointer into Vault. The credential itself never lives in this row.
+    # NULLABLE so local-only sources (auth_kind='none', e.g. member
+    # uploads a PDF) can be stored without a placeholder secret.
+    # UC-ES-DB-1.A — was NOT NULL before the ES upload collapse.
+    Column("vault_secret_id", String(512), nullable=True),
+
+    # Who the destination SaaS sees when this credential is used.
+    Column(
+        "identity_kind",
+        PgEnum(
+            IntegrationIdentityKindEnum,
+            name="integration_identity_kind",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    Column("identity_label", String(255), nullable=True),
+
+    Column(
+        "auth_kind",
+        PgEnum(
+            IntegrationAuthKindEnum,
+            name="integration_auth_kind",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    # OAuth scopes actually granted (audit + capability derivation).
+    Column("oauth_scopes_granted", ARRAY(Text), nullable=True),
+    # e.g. Jira site URL — needed to build API calls for instance-scoped
+    # providers.
+    Column("instance_url", String(512), nullable=True),
+    # Provider account identity (Slack team_id, Jira cloud_id, etc.).
+    Column("external_account_id", String(255), nullable=True),
+    Column("external_account_name", String(255), nullable=True),
+
+    # The cross-pillar axis: which pillars may use this integration.
+    # Subset of {'ingest','query','act'} (stored as text[] to stay open
+    # to new capabilities without an enum migration).
+    Column("capabilities", ARRAY(Text), nullable=False),
+
+    Column(
+        "status",
+        PgEnum(
+            IntegrationStatusEnum,
+            name="integration_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'active'"),
+    ),
+    Column("last_verified_at", TIMESTAMP(timezone=True), nullable=True),
+    # Provider-specific non-secret extras. App-level validation forbids
+    # credential-shaped keys here.
+    Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+
+    Column(
+        "created_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=False,
+    ),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    # The owner_kind invariant — a row can't be ambiguous about who owns it.
+    #   tenant    → owner_user_id NULL, workspace_id NULL (shared via enablement)
+    #   user      → owner_user_id SET,  workspace_id SET  (personal, in that ws)
+    #   workspace → owner_user_id NULL, workspace_id SET  (workspace owns it)
+    CheckConstraint(
+        "(owner_kind = 'tenant' AND owner_user_id IS NULL AND workspace_id IS NULL) "
+        "OR (owner_kind = 'user' AND owner_user_id IS NOT NULL AND workspace_id IS NOT NULL) "
+        "OR (owner_kind = 'workspace' AND owner_user_id IS NULL AND workspace_id IS NOT NULL)",
+        name="ck_integration_owner_kind_invariant",
+    ),
+    # A tenant can't connect the same provider account twice.
+    UniqueConstraint(
+        "tenant_id",
+        "provider",
+        "external_account_id",
+        name="ux_integration_tenant_provider_account",
+    ),
+    # "All integrations for tenant T of provider P" — the create/list path.
+    Index("ix_integration_tenant_provider", "tenant_id", "provider"),
+    # "My personal integrations" — the personal-tier list path.
+    Index("ix_integration_owner_user", "owner_user_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# integration_workspace_enablement — per-workspace opt-in (WF-VS1).
+#
+# A tenant integration is unusable by a workspace until an enablement
+# row exists. Enablement scopes capabilities DOWN (a subset of the
+# integration's capabilities — enforced in the service). Carries a
+# per-workspace display-name override and independent lifecycle so one
+# workspace can disable without affecting others.
+# ---------------------------------------------------------------------------
+
+integration_workspace_enablement = Table(
+    "integration_workspace_enablement",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "integration_id",
+        UUID(as_uuid=False),
+        ForeignKey("integration.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Subset of integration.capabilities granted to this workspace.
+    Column("capabilities_enabled", ARRAY(Text), nullable=False),
+    Column("display_name_override", String(255), nullable=True),
+    Column(
+        "status",
+        PgEnum(
+            IntegrationEnablementStatusEnum,
+            name="integration_enablement_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'active'"),
+    ),
+    Column(
+        "enabled_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=False,
+    ),
+    Column("enabled_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+
+    # A workspace enables a given tenant integration at most once.
+    UniqueConstraint(
+        "integration_id",
+        "workspace_id",
+        name="ux_integration_enablement_integration_workspace",
+    ),
+    # "What's enabled in workspace W" — the workspace integrations page.
+    Index("ix_integration_enablement_workspace", "workspace_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# integration_member_grant — per-member ACL (WF-VS1).
+#
+# Same cardinality/shape as workspace_da_access_grant: a flat
+# per-(member, integration, capability) grid with deny-wins-anywhere
+# resolution applied in the service. Default for a member is no access
+# (no row); admins bypass via the JWT projection. ``capability`` is
+# stored as text (includes the '*' wildcard) to stay open as
+# capabilities grow.
+# ---------------------------------------------------------------------------
+
+integration_member_grant = Table(
+    "integration_member_grant",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "integration_id",
+        UUID(as_uuid=False),
+        ForeignKey("integration.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # 'ingest' | 'query' | 'act' | '*' (wildcard = all capabilities).
+    Column("capability", String(32), nullable=False),
+    Column(
+        "effect",
+        PgEnum(
+            IntegrationGrantEffectEnum,
+            name="integration_grant_effect",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    Column(
+        "created_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=False,
+    ),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+
+    # One effect per member per integration per capability.
+    UniqueConstraint(
+        "workspace_id",
+        "user_id",
+        "integration_id",
+        "capability",
+        name="ux_integration_member_grant_member_integration_cap",
+    ),
+    # "All grants for member B in workspace W" — member-summary view.
+    Index("ix_integration_member_grant_workspace_user", "workspace_id", "user_id"),
+    # "Who can use integration I" — the integration members drawer.
+    Index("ix_integration_member_grant_integration", "integration_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# integration_sync_job — one record-source sync run (RECORD-SYNC-TEMPORAL-1).
+#
+# Top-level row for an ES-Ingestion RecordSourceSyncWorkflow execution.
+# The workflow heartbeats indexed_count / error_count / pages_completed.
+# Per-doc progress lives on the ``files`` row (processing_status), same
+# shape as file-source — so Indexed Content polls files for line-items
+# and this table for run-level rollup ("synced 1234 issues across 25
+# pages, 3 errors, completed 2m ago").
+# ---------------------------------------------------------------------------
+
+integration_sync_job = Table(
+    "integration_sync_job",
+    metadata,
+
+    Column(
+        "id",
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    ),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "integration_id",
+        UUID(as_uuid=False),
+        ForeignKey("integration.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Per-provider unit id (Jira project key, Confluence space key, ...).
+    # Opaque here; the per-provider connector primitive interprets it.
+    Column("container_id", String(255), nullable=False),
+    Column(
+        "status",
+        PgEnum(
+            IntegrationSyncJobStatusEnum,
+            name="integration_sync_job_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'pending'"),
+    ),
+    # Temporal handles. workflow_id is the deterministic key
+    # (``sync:{job_id}`` — same shape as ``file:{file_id}``);
+    # run_id is Temporal-assigned per attempt.
+    Column("temporal_workflow_id", String(255), nullable=True),
+    Column("temporal_run_id", String(255), nullable=True),
+    Column("indexed_count", Integer, nullable=False, server_default=text("0")),
+    Column("error_count", Integer, nullable=False, server_default=text("0")),
+    Column("pages_completed", Integer, nullable=False, server_default=text("0")),
+    Column(
+        "started_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id"),
+        nullable=False,
+    ),
+    Column("started_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("last_heartbeat_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("completed_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("error_detail", JSONB, nullable=True),
+
+    # "what's running right now?" — the Indexed Content polling query.
+    Index("ix_integration_sync_job_workspace_status", "workspace_id", "status"),
+    # "last sync for (integration, container)" — Content Sources card stamp.
+    Index(
+        "ix_integration_sync_job_integration_container_started",
+        "integration_id",
+        "container_id",
+        text("started_at DESC"),
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# integration_da_config — DA capability's per-connection config (DA-U1).
+#
+# The Data Analytics unification sidecar: DA warehouse connections live on the
+# unified `integration` table like every other connector, but the DA-specific
+# governance fact — the tenant schema allowlist — doesn't belong on the generic
+# row. It lives here, 1:1 with the integration (integration_id IS the PK).
+# Replaces da_connection.allowed_schemas; same NULL=unrestricted semantics.
+# Mirrors the shape a future integration_es_config will take for ingest.
+# ---------------------------------------------------------------------------
+
+integration_da_config = Table(
+    "integration_da_config",
+    metadata,
+
+    Column(
+        "integration_id",
+        UUID(as_uuid=False),
+        ForeignKey("integration.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    # Tenant-level schema allowlist (was da_connection.allowed_schemas):
+    #   NULL      → unrestricted; every warehouse schema is visible/queryable.
+    #   list[str] → allowlist; only these schemas surface + run via execute_query.
+    Column("allowed_schemas", JSONB, nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# workflow — workspace-scoped workflow definitions (WF-VS2).
+#
+# The Workflow Execution pillar's definition store: one row per workflow the
+# low-code builder produces. ``graph`` (JSONB) holds the node/edge definition
+# the GenericGraphWorkflow interprets; Temporal owns *execution* state (event
+# histories), this table owns the *definition*. created_by is metadata, not
+# ownership — a workflow is workspace-owned and outlives its author, so the FK
+# is SET NULL + nullable (unlike integration.created_by, which mismatches
+# nullability and ondelete; tracked as TD-WF-INTEGRATION-CREATED-BY).
+# ---------------------------------------------------------------------------
+
+workflow = Table(
+    "workflow",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+
+    Column("name", String(255), nullable=False),
+    Column("description", Text, nullable=True),
+
+    # The node/edge definition the GenericGraphWorkflow interprets.
+    Column("graph", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+
+    Column(
+        "status",
+        PgEnum(
+            WorkflowStatusEnum,
+            name="workflow_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'draft'"),
+    ),
+
+    Column(
+        "created_by",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    # "Workflows in workspace W of tenant T" — the builder list path.
+    Index("ix_workflow_tenant_workspace", "tenant_id", "workspace_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# Workflow Execution pillar (WF-M1) — the run record.
+#
+# A workflow becomes runnable + auditable here. ``workflow_run`` is one row per
+# execution (who triggered, when, total duration, outcome); ``workflow_run_step``
+# is one row per node per execution (its input, output, status, attempts, and
+# time taken). Full node payloads live in ``workflow_run_step`` — the record of
+# truth, redactable per pii_fields — and audit_log only references them.
+# ---------------------------------------------------------------------------
+
+workflow_run = Table(
+    "workflow_run",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+
+    # Denormalised scope (mirrors workflow) so tenant/workspace audit roll-ups
+    # don't need a join. Both cascade with their parent.
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+    Column("workflow_id", UUID(as_uuid=False), ForeignKey("workflow.id", ondelete="CASCADE"), nullable=False),
+
+    # workflow_version_id stays a bare UUID until M6 adds workflow_version.
+    Column("workflow_version_id", UUID(as_uuid=False), nullable=True),
+    # trigger_id now references workflow_trigger (M3a.2). SET NULL — deleting a
+    # trigger keeps the run history, just unlinks it.
+    Column(
+        "trigger_id",
+        UUID(as_uuid=False),
+        ForeignKey("workflow_trigger.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+
+    Column(
+        "status",
+        PgEnum(
+            WorkflowRunStatusEnum,
+            name="workflow_run_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'queued'"),
+    ),
+
+    # Who triggered THIS run. The actor is absent for cron / anonymous webhook
+    # (SET NULL); the audit principal is always known — author for cron, actor
+    # otherwise — and is RESTRICT, never nulled, so the audit chain holds.
+    Column("actor_user_id", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+    Column(
+        "actor_kind",
+        PgEnum(
+            WorkflowActorKindEnum,
+            name="workflow_actor_kind",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    Column("audit_principal_user_id", UUID(as_uuid=False), ForeignKey("user.id", ondelete="RESTRICT"), nullable=False),
+
+    Column("temporal_run_id", Text, nullable=True),
+    Column("trigger_payload", JSONB, nullable=True),
+    Column("error_message", Text, nullable=True),
+
+    # created = when triggered; started = when execution began; finished = end.
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("started_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("finished_at", TIMESTAMP(timezone=True), nullable=True),
+
+    # Run-history list path: runs of a workflow, newest first.
+    Index("ix_workflow_run_workflow_created", "workflow_id", "created_at"),
+    # Tenant/workspace governance roll-up.
+    Index("ix_workflow_run_tenant_workspace", "tenant_id", "workspace_id"),
+)
+
+
+workflow_run_step = Table(
+    "workflow_run_step",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column("run_id", UUID(as_uuid=False), ForeignKey("workflow_run.id", ondelete="CASCADE"), nullable=False),
+
+    # Node identity within the run's graph.
+    Column("step_id", Text, nullable=False),
+    Column("node_kind", Text, nullable=False),
+
+    Column(
+        "status",
+        PgEnum(
+            WorkflowRunStepStatusEnum,
+            name="workflow_run_step_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'pending'"),
+    ),
+
+    # Full node input/output — the record of truth (redacted per pii_fields in M8).
+    Column("input_json", JSONB, nullable=True),
+    Column("output_json", JSONB, nullable=True),
+
+    # Temporal retry count for this node.
+    Column("attempts", Integer, nullable=False, server_default=text("0")),
+
+    # Which pii_fields redaction flags were applied (filled in M8).
+    Column("pii_classification", ARRAY(Text), nullable=True),
+    Column("error_message", Text, nullable=True),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("started_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("finished_at", TIMESTAMP(timezone=True), nullable=True),
+
+    # Steps of a run — the per-run inspector path.
+    Index("ix_workflow_run_step_run", "run_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# Workflow Execution pillar (WF-M3a.2) — triggers.
+#
+# A stored trigger is how a workflow fires WITHOUT a manual Run click. A webhook
+# trigger carries a unique ``token`` whose public URL (POST /triggers/{token})
+# starts a run with the request body as the trigger node's payload; cron/event
+# triggers carry their settings in ``config``. ``node_id`` binds the trigger to
+# the trigger node in the workflow's graph.
+# ---------------------------------------------------------------------------
+
+workflow_trigger = Table(
+    "workflow_trigger",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+
+    # Denormalised scope (mirrors workflow) — cascades with its parents.
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+    Column("workflow_id", UUID(as_uuid=False), ForeignKey("workflow.id", ondelete="CASCADE"), nullable=False),
+
+    # The trigger node in the graph this binds to.
+    Column("node_id", Text, nullable=False),
+
+    Column(
+        "kind",
+        PgEnum(
+            WorkflowTriggerKindEnum,
+            name="workflow_trigger_kind",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+
+    # Public webhook token (unguessable) — null for cron/event. Unique so the
+    # public fire path resolves the workflow in one indexed lookup.
+    Column("token", Text, nullable=True),
+
+    # Kind-specific settings (cron expression, webhook auth mode, …).
+    Column("config", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+
+    Column(
+        "status",
+        PgEnum(
+            WorkflowTriggerStatusEnum,
+            name="workflow_trigger_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'active'"),
+    ),
+
+    Column("created_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    # Triggers of a workflow — the builder + management list path.
+    Index("ix_workflow_trigger_workflow", "workflow_id"),
+    # O(1) public webhook resolution; partial so multiple token-less (cron) rows
+    # don't collide on NULL.
+    Index(
+        "uq_workflow_trigger_token",
+        "token",
+        unique=True,
+        postgresql_where=text("token IS NOT NULL"),
     ),
 )

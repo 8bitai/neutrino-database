@@ -4,19 +4,23 @@ from neutrino_database.models.enums import (
     ChatKindEnum,
     DAAccessEffectEnum,
     DAAccessResourceTypeEnum,
-    DAConnectionStatusEnum,
     DADescriptionScopeEnum,
     DADescriptionSourceEnum,
     DAJoinHintSourceEnum,
     DAJoinTypeEnum,
     DAMetricSourceEnum,
-    DASourceTypeEnum,
     DATableTypeEnum,
     DashboardStatusEnum,
     DashboardVisibilityEnum,
     DashboardWidgetTypeEnum,
     ExcelDatasetStatus,
     IdpProviderEnum,
+    IntegrationAuthKindEnum,
+    IntegrationEnablementStatusEnum,
+    IntegrationGrantEffectEnum,
+    IntegrationIdentityKindEnum,
+    IntegrationOwnerKindEnum,
+    IntegrationStatusEnum,
     KeyStatusEnum,
     MemberSourceEnum,
     MessageRoleEnum,
@@ -28,6 +32,12 @@ from neutrino_database.models.enums import (
     SpanType,
     TenantStatusEnum,
     UserStatusEnum,
+    WorkflowStatusEnum,
+    WorkflowRunStatusEnum,
+    WorkflowActorKindEnum,
+    WorkflowRunStepStatusEnum,
+    WorkflowTriggerKindEnum,
+    WorkflowTriggerStatusEnum,
     WorkspaceAccessStatusEnum,
     WorkspaceStatusEnum,
 )
@@ -961,29 +971,6 @@ class TenancyOwnershipTransfer(Base):
 # ===========================================================================
 
 
-class DAConnection(Base):
-    """Tenant-level DA Connection — one row per tenant warehouse credential.
-
-    Lifecycle CRUD owned by connector-service (feature.md F4). agent-platform
-    reads it to know which connection to call when running metadata sync /
-    SQL execution against the warehouse.
-    """
-
-    __table__ = tables.da_connection
-
-    id: Mapped[str]
-    tenant_id: Mapped[str]
-    source_type: Mapped[DASourceTypeEnum]
-    connection_name: Mapped[str]
-    credentials: Mapped[dict]  # KMS-wrapped JSONB
-    status: Mapped[DAConnectionStatusEnum]
-    # NULL = unrestricted; list[str] = tenant-allowed schema whitelist.
-    allowed_schemas: Mapped[Optional[list]]
-    created_by: Mapped[Optional[str]]
-    created_at: Mapped[datetime]
-    updated_at: Mapped[datetime]
-
-
 class DACatalogSchema(Base):
     """Tenant-level fact: a schema discovered in a connected warehouse.
 
@@ -1133,6 +1120,24 @@ class WorkspaceDASettings(Base):
     workspace_id: Mapped[str]
     da_include_sample_values: Mapped[bool]
     da_pii_redaction_enabled: Mapped[bool]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class WorkspaceIntegrationSettings(Base):
+    """Workspace-level connector governance policy (WF-CF-1b).
+
+    One row per workspace, lazy-created on first write; absence = defaults
+    (permissive, fail-safe). Cross-pillar — the workspace-admin switches that
+    gate how members use connectors here (e.g. whether personal connections
+    are allowed).
+    """
+
+    __table__ = tables.workspace_integration_settings
+
+    workspace_id: Mapped[str]
+    allow_personal_integrations: Mapped[bool]
+    allow_personal_scoped_workflows: Mapped[bool]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 
@@ -1318,3 +1323,209 @@ class DashboardLinkToken(Base):
     created_by: Mapped[Optional[str]]
     accessed_count: Mapped[int]
     created_at: Mapped[datetime]
+
+# ---------------------------------------------------------------------------
+# Unified integration hierarchy (WF-VS1).
+# ---------------------------------------------------------------------------
+
+
+class Integration(Base):
+    """Unified credential record shared across ES + DA + WF.
+
+    ONE row per credential. The Vault secret lives behind
+    ``vault_secret_id`` — never in this row. Established once at the
+    tenant level (owner_kind='tenant') or owned by an individual
+    (owner_kind='user'). ``identity_kind`` records who the destination
+    SaaS sees. ``capabilities`` (text[]) is the cross-pillar axis:
+    ES uses 'ingest', DA 'query', WF 'act'.
+    """
+
+    __table__ = tables.integration
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    owner_kind: Mapped[IntegrationOwnerKindEnum]
+    owner_user_id: Mapped[Optional[str]]
+    workspace_id: Mapped[Optional[str]]
+    provider: Mapped[str]
+    display_name: Mapped[str]
+    vault_secret_id: Mapped[str]
+    identity_kind: Mapped[IntegrationIdentityKindEnum]
+    identity_label: Mapped[Optional[str]]
+    auth_kind: Mapped[IntegrationAuthKindEnum]
+    oauth_scopes_granted: Mapped[Optional[List[str]]]
+    instance_url: Mapped[Optional[str]]
+    external_account_id: Mapped[Optional[str]]
+    external_account_name: Mapped[Optional[str]]
+    capabilities: Mapped[List[str]]
+    status: Mapped[IntegrationStatusEnum]
+    last_verified_at: Mapped[Optional[datetime]]
+    # NB: the JSONB ``metadata`` column is auto-instrumented from
+    # ``__table__``; we don't add a bare ``metadata`` annotation here
+    # because it would shadow SQLAlchemy's reserved Declarative attr.
+    created_by: Mapped[str]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class IntegrationWorkspaceEnablement(Base):
+    """Per-workspace opt-in for a tenant integration.
+
+    A tenant integration is unusable by a workspace until an enablement
+    row exists. ``capabilities_enabled`` is a subset of the parent
+    integration's capabilities (scope-down enforced in the service).
+    """
+
+    __table__ = tables.integration_workspace_enablement
+
+    id: Mapped[str]
+    integration_id: Mapped[str]
+    workspace_id: Mapped[str]
+    capabilities_enabled: Mapped[List[str]]
+    display_name_override: Mapped[Optional[str]]
+    status: Mapped[IntegrationEnablementStatusEnum]
+    enabled_by: Mapped[str]
+    enabled_at: Mapped[datetime]
+
+
+class IntegrationMemberGrant(Base):
+    """Per-member ACL on an integration capability (deny-wins-anywhere).
+
+    One row per ``(workspace_id, user_id, integration_id, capability)``.
+    Absence of a row = no explicit grant (default deny for members;
+    admins bypass via JWT projection). Resolution rule lives in the
+    service (mirrors ``WorkspaceDAAccessService``).
+    """
+
+    __table__ = tables.integration_member_grant
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    user_id: Mapped[str]
+    integration_id: Mapped[str]
+    capability: Mapped[str]
+    effect: Mapped[IntegrationGrantEffectEnum]
+    created_by: Mapped[str]
+    created_at: Mapped[datetime]
+
+
+class IntegrationDAConfig(Base):
+    """DA capability's per-connection config — 1:1 with an integration (DA-U1).
+
+    Keeps the generic ``integration`` row free of pillar-specific columns:
+    the tenant schema allowlist (``allowed_schemas``) lives here. Replaces
+    ``da_connection.allowed_schemas``; NULL = unrestricted.
+    """
+
+    __table__ = tables.integration_da_config
+
+    integration_id: Mapped[str]
+    allowed_schemas: Mapped[Optional[list]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class Workflow(Base):
+    """Workspace-scoped workflow definition (WF-VS2).
+
+    The low-code builder's output. ``graph`` (JSONB) holds the node/edge
+    definition the GenericGraphWorkflow interprets at run time; Temporal owns
+    *execution* state, this row owns the *definition*. created_by is metadata
+    (SET NULL on user delete), not ownership — the workflow is workspace-owned.
+    """
+
+    __table__ = tables.workflow
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    workspace_id: Mapped[str]
+    name: Mapped[str]
+    description: Mapped[Optional[str]]
+    graph: Mapped[dict]
+    status: Mapped[WorkflowStatusEnum]
+    created_by: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class WorkflowRun(Base):
+    """One workflow execution (WF-M1) — the governance record of a run.
+
+    Captures who triggered the run (``actor_user_id`` / ``actor_kind``, with
+    ``audit_principal_user_id`` always set), when (``created_at`` =
+    triggered, ``started_at`` = execution began) and the total duration to
+    ``finished_at``. ``workflow_version_id`` / ``trigger_id`` are unconstrained
+    UUIDs until M6 / M4 add their tables. Temporal owns the step-by-step event
+    history; this row + ``WorkflowRunStep`` are the queryable, auditable record.
+    """
+
+    __table__ = tables.workflow_run
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    workspace_id: Mapped[str]
+    workflow_id: Mapped[str]
+    workflow_version_id: Mapped[Optional[str]]
+    trigger_id: Mapped[Optional[str]]
+    status: Mapped[WorkflowRunStatusEnum]
+    actor_user_id: Mapped[Optional[str]]
+    actor_kind: Mapped[WorkflowActorKindEnum]
+    audit_principal_user_id: Mapped[str]
+    temporal_run_id: Mapped[Optional[str]]
+    trigger_payload: Mapped[Optional[dict]]
+    error_message: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    started_at: Mapped[Optional[datetime]]
+    finished_at: Mapped[Optional[datetime]]
+
+
+class WorkflowRunStep(Base):
+    """One executed node within a run (WF-M1) — its I/O, status, and timing.
+
+    ``input_json`` / ``output_json`` hold the node's full payloads (the record
+    of truth, redacted per the action's pii_fields in M8); ``attempts`` exposes
+    the Temporal retry count; ``started_at`` / ``finished_at`` give the per-node
+    time taken. Cascade-deleted with its parent run.
+    """
+
+    __table__ = tables.workflow_run_step
+
+    id: Mapped[str]
+    run_id: Mapped[str]
+    step_id: Mapped[str]
+    node_kind: Mapped[str]
+    status: Mapped[WorkflowRunStepStatusEnum]
+    input_json: Mapped[Optional[dict]]
+    output_json: Mapped[Optional[dict]]
+    attempts: Mapped[int]
+    pii_classification: Mapped[Optional[List[str]]]
+    error_message: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    started_at: Mapped[Optional[datetime]]
+    finished_at: Mapped[Optional[datetime]]
+
+
+class WorkflowTrigger(Base):
+    """How a workflow fires without a manual Run click (WF-M3a.2).
+
+    A webhook trigger carries a unique ``token`` whose public URL
+    (``POST /triggers/{token}``) starts a run with the request body as the
+    trigger node's payload; cron/event triggers carry their settings in
+    ``config``. ``node_id`` binds the trigger to the trigger node in the
+    workflow's graph. Cascade-deleted with its workflow.
+    """
+
+    __table__ = tables.workflow_trigger
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    workspace_id: Mapped[str]
+    workflow_id: Mapped[str]
+    node_id: Mapped[str]
+    kind: Mapped[WorkflowTriggerKindEnum]
+    token: Mapped[Optional[str]]
+    config: Mapped[dict]
+    status: Mapped[WorkflowTriggerStatusEnum]
+    created_by: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]

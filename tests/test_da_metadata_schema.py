@@ -119,88 +119,20 @@ class TestOldWorkspaceMetadataTablesRemoved:
 
 
 # ---------------------------------------------------------------------------
-# Table 1 — da_connection (tenant-level Connection per data-flow.md Step 1)
-# Unchanged in DA-P1g.
+# da_connection was DROPPED in DA-U6 — DA warehouse connections now live on the
+# unified `integration` table (DA-U3/U4). The table's shape assertions were
+# removed with it; integration coverage lives in the connector-service +
+# agent-platform suites. The catalog tables below keep their `da_connection_id`
+# column name (now FK → integration; rename deferred, TD-DA-CATALOG-COLNAME).
 # ---------------------------------------------------------------------------
 
 
-class TestDAConnectionTable:
+class TestDAConnectionTableDropped:
     @pytest.mark.asyncio
-    async def test_table_exists(self, test_engine):
-        assert await _table_exists(test_engine, "da_connection"), (
-            "da_connection must exist — tenant-level Connection."
-        )
-
-    @pytest.mark.asyncio
-    async def test_required_columns(self, test_engine):
-        cols = await _columns(test_engine, "da_connection")
-        expected = {
-            "id",
-            "tenant_id",
-            "source_type",
-            "connection_name",
-            "credentials",
-            "status",
-            "allowed_schemas",
-            "created_by",
-            "created_at",
-            "updated_at",
-        }
-        missing = expected - cols.keys()
-        assert not missing, (
-            f"da_connection missing required columns: {missing}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_allowed_schemas_is_nullable_jsonb(self, test_engine):
-        cols = await _columns(test_engine, "da_connection")
-        col = cols.get("allowed_schemas")
-        assert col is not None
-        assert col["nullable"] is True, (
-            "allowed_schemas is nullable — null means 'unrestricted'."
-        )
-        assert "JSONB" in str(col["type"]).upper(), (
-            f"allowed_schemas must be JSONB; got {col['type']}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_credentials_is_pii_tagged(self, test_engine):
-        cols = await _columns(test_engine, "da_connection")
-        comment = cols["credentials"].get("comment") or ""
-        assert "pii:credentials" in comment, (
-            "da_connection.credentials must be tagged 'pii:credentials' "
-            "(holds warehouse passwords + service-account keys)."
-        )
-
-    @pytest.mark.asyncio
-    async def test_tenant_fk_cascade(self, test_engine):
-        fks = await _foreign_keys(test_engine, "da_connection")
-        t_fk = [fk for fk in fks if "tenant_id" in fk["constrained_columns"]]
-        assert t_fk and t_fk[0]["referred_table"] == "tenant"
-        assert _ondelete(t_fk[0]) == "CASCADE", (
-            "Deleting a tenant must cascade-delete its DA Connections."
-        )
-
-    @pytest.mark.asyncio
-    async def test_created_by_fk_set_null(self, test_engine):
-        fks = await _foreign_keys(test_engine, "da_connection")
-        cb_fk = [fk for fk in fks if "created_by" in fk["constrained_columns"]]
-        assert cb_fk and cb_fk[0]["referred_table"] == "user"
-        assert _ondelete(cb_fk[0]) == "SET NULL"
-
-    @pytest.mark.asyncio
-    async def test_unique_per_tenant_source_name(self, test_engine):
-        indexes = await _indexes(test_engine, "da_connection")
-        unique = [
-            idx
-            for idx in indexes
-            if idx.get("unique")
-            and set(idx.get("column_names") or [])
-            == {"tenant_id", "source_type", "connection_name"}
-        ]
-        assert unique, (
-            "Expected unique (tenant_id, source_type, connection_name) "
-            f"on da_connection; got {indexes!r}"
+    async def test_da_connection_table_is_gone(self, test_engine):
+        assert not await _table_exists(test_engine, "da_connection"), (
+            "da_connection must NOT exist — dropped in DA-U6 (unified onto "
+            "the integration table)."
         )
 
 
@@ -233,14 +165,18 @@ class TestDACatalogSchemaTable:
 
     @pytest.mark.asyncio
     async def test_connection_fk_cascade(self, test_engine):
+        # DA-U2: DA connections moved onto the unified `integration` table, so
+        # the catalog's parent FK now targets `integration` (the column keeps
+        # its legacy name `da_connection_id` — rename deferred,
+        # TD-DA-CATALOG-COLNAME).
         fks = await _foreign_keys(test_engine, "da_catalog_schema")
         c_fk = [
             fk for fk in fks
             if "da_connection_id" in fk["constrained_columns"]
         ]
-        assert c_fk and c_fk[0]["referred_table"] == "da_connection"
+        assert c_fk and c_fk[0]["referred_table"] == "integration"
         assert _ondelete(c_fk[0]) == "CASCADE", (
-            "Deleting a connection must remove its catalog facts — they're "
+            "Deleting the integration must remove its catalog facts — they're "
             "meaningless without the credential that produced them."
         )
 
