@@ -35,11 +35,78 @@ class UserStatusEnum(str, Enum):
 class IdpProviderEnum(str, Enum):
     AZURE_AD = "AZURE_AD"
     GOOGLE_IDENTITY = "GOOGLE_IDENTITY"
+    # Synthetic provider for password-authed users. There is no external
+    # IdP, so the Neutrino user_id IS the stable provider_user_id within
+    # this namespace. Lets every Neutrino user have an addressable Member
+    # row in OpenFGA Store B regardless of how they signed in
+    # (X-MEMBER-BRIDGE-1).
+    NEUTRINO_LOCAL = "NEUTRINO_LOCAL"
 
 class MemberSourceEnum(str, Enum):
     """How we discovered this member"""
     SSO_LOGIN = "SSO_LOGIN"              # User logged in via UI/Teams
     FILE_PERMISSIONS = "FILE_PERMISSIONS"  # From file permission sync
+    LOCAL_LOGIN = "LOCAL_LOGIN"          # User logged in via local password
+
+
+class FileProcessingStatusEnum(str, Enum):
+    """Where a file is in its processing pipeline (X-DOC-1).
+
+    The user-visible state machine that drives the FE status surface,
+    Temporal workflow orchestration, and audit emission. See
+    ``user-stories/connect-ingestion-refactor.md`` §6 for transitions
+    and §7 for Temporal workflow architecture.
+
+    Forward path:
+        pending -> fetching -> fetched
+                -> parsing -> chunking -> embedding
+                -> indexing -> acl_replicated -> indexed
+    Terminal:
+        any -> failed (with error_code + error_message + retriable_at)
+        any -> deleted (tombstone)
+    Retry:
+        failed -> fetching (new attempt_id)
+    """
+
+    PENDING = "pending"
+    FETCHING = "fetching"
+    FETCHED = "fetched"
+    PARSING = "parsing"
+    CHUNKING = "chunking"
+    EMBEDDING = "embedding"
+    INDEXING = "indexing"
+    ACL_REPLICATED = "acl_replicated"
+    INDEXED = "indexed"
+    FAILED = "failed"
+    DELETED = "deleted"
+
+
+class FileSourceTypeEnum(str, Enum):
+    """CanonicalDocument source kind (CANON-DOC-1).
+
+    Closed vocabulary from ``product-feature-roadmap/enterprise-search/
+    unified-doc-parse-chunk.md``. Drives chunking regime (long-form
+    regime A vs short-record regime B), citation card layout, ranking
+    weights (recency matters more for `message`/`issue` than `file`),
+    and chat-UI filter chips.
+
+    New kinds require an alembic migration; the framework relies on
+    this being exhaustive at the type level.
+    """
+
+    FILE = "file"
+    ISSUE = "issue"
+    PULL_REQUEST = "pull_request"
+    COMMIT = "commit"
+    PAGE = "page"
+    RECORD = "record"
+    MESSAGE = "message"
+    EMAIL = "email"
+    EVENT = "event"
+    COMMENT = "comment"
+    ATTACHMENT = "attachment"
+    TICKET = "ticket"
+
 
 class MessageRoleEnum(str, Enum):
     USER = "USER"
@@ -61,6 +128,20 @@ class RouterModeEnum(str, Enum):
     SEARCH_ONLY = "SEARCH_ONLY"
     ACTION_ONLY = "ACTION_ONLY"
     DA_ONLY = "DA_ONLY"
+
+
+class PillarEnum(str, Enum):
+    """
+    The three product pillars a workspace can have enabled, in any
+    combination. Replaces the conflated single-value RouterModeEnum
+    as the source-of-truth for "what does this workspace do" — see
+    `workspace.enabled_pillars` and the alembic migration that adds
+    it. RouterModeEnum stays for now (agent-platform still reads it);
+    the gateway writes both during a transition window.
+    """
+    ENTERPRISE_SEARCH = "ENTERPRISE_SEARCH"
+    DATA_ANALYTICS = "DATA_ANALYTICS"
+    WORKFLOW_EXECUTION = "WORKFLOW_EXECUTION"
 
 
 class RetrievalStrategyEnum(str, Enum):
@@ -119,3 +200,414 @@ class ExcelDatasetStatus(str, Enum):
     READY = "ready"
     FAILED = "failed"
     DELETED = "deleted"
+
+
+# ---------------------------------------------------------------------------
+# Data Analytics pillar (NEU-1811 DA-P0).
+#
+# Eight enums backing the canonical metadata schema described in
+# `product-feature-roadmap/data-analytics/data-flow.md` §4.8. Naming is
+# DA-prefixed so they cannot collide with the legacy `ConnectionStatus`
+# (which is the ES connector enum, shared with SharePoint/Drive auth).
+# ---------------------------------------------------------------------------
+
+
+class DAConnectionStatusEnum(str, Enum):
+    """Lifecycle status of a tenant-level DA Connection.
+
+    pending_auth — created but credentials not yet verified
+    active       — credentials validated; ready for metadata sync + queries
+    degraded     — last sync had recoverable errors (partial failure)
+    error        — credentials invalid / persistent failure; admin attention
+    disabled     — admin paused the connection
+    """
+    PENDING_AUTH = "pending_auth"
+    ACTIVE = "active"
+    DEGRADED = "degraded"
+    ERROR = "error"
+    DISABLED = "disabled"
+
+
+class DASourceTypeEnum(str, Enum):
+    """Warehouse source types supported by the DA pillar.
+
+    v1 ships postgres + snowflake + bigquery; mysql + oracle queued. Mongo
+    arrives later via a separate NoSqlBaseAdapter (per feature.md F5).
+    """
+    POSTGRES = "postgres"
+    SNOWFLAKE = "snowflake"
+    BIGQUERY = "bigquery"
+    MYSQL = "mysql"
+    ORACLE = "oracle"
+
+
+class DATableTypeEnum(str, Enum):
+    """Kind of relation surfaced by INFORMATION_SCHEMA.TABLES."""
+    TABLE = "table"
+    VIEW = "view"
+    MATERIALIZED_VIEW = "materialized_view"
+
+
+class DAMetricSourceEnum(str, Enum):
+    """Where this Metric came from (HITL provenance).
+
+    admin_authored        — Workspace Admin wrote it directly
+    ai_suggested          — AI proposed; pending admin accept/reject
+    ai_accepted_by_admin  — AI proposed and admin accepted unchanged
+    """
+    ADMIN_AUTHORED = "admin_authored"
+    AI_SUGGESTED = "ai_suggested"
+    AI_ACCEPTED_BY_ADMIN = "ai_accepted_by_admin"
+
+
+class DAJoinHintSourceEnum(str, Enum):
+    """Where this JoinHint came from (HITL provenance).
+
+    inferred_from_fk — auto-derived from FK constraints during Phase 1 pull
+    admin_authored / ai_suggested / ai_accepted_by_admin as above
+    """
+    ADMIN_AUTHORED = "admin_authored"
+    INFERRED_FROM_FK = "inferred_from_fk"
+    AI_SUGGESTED = "ai_suggested"
+    AI_ACCEPTED_BY_ADMIN = "ai_accepted_by_admin"
+
+
+class DAJoinTypeEnum(str, Enum):
+    """SQL join semantics the hint describes."""
+    INNER = "inner"
+    LEFT = "left"
+    RIGHT = "right"
+    FULL = "full"
+
+
+class DADescriptionScopeEnum(str, Enum):
+    """What kind of row a description_version row belongs to.
+
+    Soft-FK pattern: `description_version.parent_id` references one of
+    four parent tables; `scope` discriminates. No DB-level FK because
+    Postgres doesn't support discriminated FKs natively.
+    """
+    TABLE = "table"
+    COLUMN = "column"
+    METRIC = "metric"
+    JOIN_HINT = "join_hint"
+
+
+class DADescriptionSourceEnum(str, Enum):
+    """Provenance of a description_version entry.
+
+    native_comment  — copied from the source DDL during Phase 1
+    ai_generated    — created by GovernedLLM (admin-triggered)
+    ai_suggested    — AI proposed but not yet admin-accepted (HITL)
+    admin_edited    — Workspace Admin wrote / overrode the description
+    """
+    NATIVE_COMMENT = "native_comment"
+    AI_GENERATED = "ai_generated"
+    AI_SUGGESTED = "ai_suggested"
+    ADMIN_EDITED = "admin_edited"
+
+
+# ---------------------------------------------------------------------------
+# Dashboards (NEU-1811 DA-P3.1). Workspace-scoped authored surfaces
+# built via the build chat. Draft/Published lifecycle + workspace /
+# restricted / link-only visibility + per-widget data binding.
+# ---------------------------------------------------------------------------
+
+
+class DashboardStatusEnum(str, Enum):
+    """Lifecycle status of a saved dashboard.
+
+    draft     — work in progress, visible only to workspace admins
+                in the Library's Drafts section.
+    published — finalised, visible to every workspace member per
+                the visibility flag.
+    """
+    DRAFT = "draft"
+    PUBLISHED = "published"
+
+
+class DashboardVisibilityEnum(str, Enum):
+    """Audience scope for a published dashboard.
+
+    workspace_members — every member of the workspace can view (default
+                        for published dashboards).
+    restricted        — explicit member / group allowlist via
+                        dashboard_share rows. (v2; the table doesn't
+                        ship in DA-P3.1 — TD-DASH-INTERNAL-SHARE-1.)
+    link_only         — unlisted; only a link-token holder can view.
+                        No workspace-member access by default.
+    """
+    WORKSPACE_MEMBERS = "workspace_members"
+    RESTRICTED = "restricted"
+    LINK_ONLY = "link_only"
+
+
+class DashboardWidgetTypeEnum(str, Enum):
+    """v1 widget catalog — what the canvas grid can render.
+
+    Each maps 1:1 to a visualization renderer in
+    components/visualizations on the FE side.
+    """
+    KPI_TILE = "kpi_tile"
+    LINE_CHART = "line_chart"
+    BAR_CHART = "bar_chart"
+    STACKED_BAR = "stacked_bar"
+    PIE_CHART = "pie_chart"
+    DONUT_CHART = "donut_chart"
+    TABLE = "table"
+    TEXT = "text"
+
+
+class ChatKindEnum(str, Enum):
+    """What a chat thread is for (D6).
+
+    ad_hoc          — the day-to-day Q&A chat surface. The default.
+    dashboard_build — admin's build conversation with the dashboard
+                      agent. One row per dashboard, set when the
+                      dashboard is created. Drafts in the Library
+                      are these chats.
+    """
+    AD_HOC = "ad_hoc"
+    DASHBOARD_BUILD = "dashboard_build"
+
+
+class DAAccessResourceTypeEnum(str, Enum):
+    """Which DA catalog level a workspace_da_access_grant row applies
+    to (X-DA-ACL-1). The grant + the resource_id together identify the
+    exact node in the schema → table → column tree we're granting or
+    denying access to."""
+    SCHEMA = "schema"
+    TABLE = "table"
+    COLUMN = "column"
+
+
+class DAAccessEffectEnum(str, Enum):
+    """Two-state effect for a workspace_da_access_grant row
+    (X-DA-ACL-1). 'Inherits parent' is the absence of any row at this
+    level — it is never stored. Resolution rule applied by the
+    service:
+
+      * Walk the resource tree from leaf up (column → table → schema
+        → workspace-member). Closest level with an explicit row
+        wins.
+      * At the same level, deny beats allow (column conflict can't
+        happen given the UNIQUE constraint, but the rule still holds
+        across levels: a child-allow can override a parent-deny).
+      * Tenant Owner / Tenant Admin / Workspace Admin bypass entirely
+        via the JWT projection.
+      * M10 PII / Restricted catalog flags hard-block above all of
+        this.
+    """
+    ALLOW = "allow"
+    DENY = "deny"
+
+
+# ---------------------------------------------------------------------------
+# Unified integration hierarchy (WF-VS1) — the credential model shared across
+# ES + DA + WF. See product-feature-roadmap/workflow-execution §5a, §9.
+# ---------------------------------------------------------------------------
+
+
+class IntegrationOwnerKindEnum(str, Enum):
+    """Where an integration credential is owned. Three tiers — a tenant
+    admin establishes corporate connections shared via enablement; a
+    workspace admin can also establish a connection their workspace owns
+    outright; any member can connect a personal credential. The CHECK
+    constraint on ``integration`` ties this to the nullability of
+    ``owner_user_id`` / ``workspace_id``:
+
+      * ``tenant``    → owner_user_id IS NULL  AND workspace_id IS NULL
+      * ``user``      → owner_user_id NOT NULL AND workspace_id NOT NULL
+      * ``workspace`` → owner_user_id IS NULL  AND workspace_id NOT NULL
+        (``workspace_id`` is the owning workspace)
+    """
+    TENANT = "tenant"
+    USER = "user"
+    WORKSPACE = "workspace"
+
+
+class IntegrationIdentityKindEnum(str, Enum):
+    """Who the destination SaaS sees when this credential is used.
+    Derived from the provider catalog at create time, never
+    client-supplied. Orthogonal to owner_kind.
+
+    ``none`` is reserved for local-only sources (member uploads a PDF /
+    CSV) where there is no remote destination, so the "identity the
+    destination sees" question doesn't apply. Introduced in
+    UC-ES-DB-1.A when collapsing legacy ``datasources`` onto
+    ``integration``."""
+    USER = "user"
+    APP = "app"
+    SERVICE_ACCOUNT = "service_account"
+    NONE = "none"
+
+
+class IntegrationAuthKindEnum(str, Enum):
+    """How the credential authenticates. ``api_key`` / ``basic`` need no
+    OAuth app registration (the member/tenant pastes a token);
+    ``oauth2`` / ``oauth2_app_only`` require a platform or BYO app
+    (Level-1 registration).
+
+    Two distinct OAuth flows — they look similar at the catalog layer
+    but have very different security shapes, so the SOC2 evidence chain
+    ("how did this credential authenticate?") records them separately:
+
+      * ``oauth2``          — delegated authorization-code grant.
+                               The user signs in via popup; the
+                               credential acts AS that user. Refresh
+                               token rotates per user. Identity kind
+                               = ``user``.
+      * ``oauth2_app_only`` — client-credentials grant. The app
+                               authenticates as itself; needs admin
+                               pre-grant on the destination (e.g.
+                               SharePoint Sites.Selected). No user
+                               involvement at credential-mint time.
+                               Identity kind = ``app``. Added in
+                               UC-ES-DB-1.D.1e.
+
+    ``none`` is reserved for sources that don't authenticate against a
+    remote system at all (member uploads a PDF directly into ES). When
+    ``auth_kind == 'none'``, ``vault_secret_id`` is also NULL (no
+    credential to vault). Introduced in UC-ES-DB-1.A."""
+    OAUTH2 = "oauth2"
+    OAUTH2_APP_ONLY = "oauth2_app_only"
+    API_KEY = "api_key"
+    BASIC = "basic"
+    CUSTOM = "custom"
+    NONE = "none"
+
+
+class IntegrationStatusEnum(str, Enum):
+    """Lifecycle of an integration credential."""
+    ACTIVE = "active"
+    DISABLED = "disabled"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+
+class IntegrationEnablementStatusEnum(str, Enum):
+    """Lifecycle of a per-workspace enablement of a tenant integration.
+    Disabling pauses workspace use without revoking the underlying
+    tenant credential."""
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
+
+class IntegrationSyncJobStatusEnum(str, Enum):
+    """Lifecycle of one record-source sync run (RECORD-SYNC-TEMPORAL-1).
+    Driven by ES-Ingestion's ``RecordSourceSyncWorkflow``:
+
+      pending → running → succeeded | failed | cancelled
+
+    Mirrors the file-source side's ``ingestion_job_status`` shape so
+    Indexed Content can render run-level rollup identically for either
+    ingestion path."""
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class IntegrationGrantEffectEnum(str, Enum):
+    """Two-state effect for an integration_member_grant row. Same
+    deny-wins-anywhere semantics as DAAccessEffectEnum, scoped to
+    integration capabilities. 'No row' = no explicit grant (default
+    deny for members; admins bypass via JWT projection)."""
+    ALLOW = "allow"
+    DENY = "deny"
+
+
+# ---------------------------------------------------------------------------
+# Workflow Execution pillar (WF-VS2) — workflow definitions.
+# ---------------------------------------------------------------------------
+
+
+class WorkflowStatusEnum(str, Enum):
+    """Lifecycle of a workflow definition.
+
+    draft     — being built; not yet runnable on a schedule/trigger.
+    active    — live; may be triggered / run.
+    disabled  — paused without deletion (triggers won't fire).
+    archived  — retired; retained for audit, hidden from the builder.
+    """
+    DRAFT = "draft"
+    ACTIVE = "active"
+    DISABLED = "disabled"
+    ARCHIVED = "archived"
+
+
+class WorkflowRunStatusEnum(str, Enum):
+    """Lifecycle of a single workflow execution (one ``workflow_run`` row).
+
+    queued    — run row created; Temporal start in flight, not yet executing.
+    running   — at least one node has begun.
+    succeeded — every node completed without error.
+    failed    — a node failed (after retries) and aborted the run.
+    cancelled — explicitly cancelled by a user / admin.
+    """
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class WorkflowActorKindEnum(str, Enum):
+    """How a run was triggered — drives the identity/audit interpretation.
+
+    user           — a person clicked Run (manual). ``actor_user_id`` set.
+    cron           — a schedule fired; no actor (``audit_principal`` = author).
+    event          — an internal event fired the run.
+    webhook_auth   — an authenticated inbound webhook (actor from the JWT).
+    webhook_anon   — an anonymous inbound webhook; no actor.
+    fan_out_member — one iteration of a per-member cron fan-out (actor = member).
+
+    M1 only ever writes ``user``; the rest are defined now so M4/M5/M7 add no
+    enum migration.
+    """
+    USER = "user"
+    CRON = "cron"
+    EVENT = "event"
+    WEBHOOK_AUTH = "webhook_auth"
+    WEBHOOK_ANON = "webhook_anon"
+    FAN_OUT_MEMBER = "fan_out_member"
+
+
+class WorkflowRunStepStatusEnum(str, Enum):
+    """Lifecycle of a single executed node within a run (``workflow_run_step``).
+
+    pending   — recorded but not yet started.
+    running   — the node's activity is in flight.
+    succeeded — completed without error.
+    failed    — failed after exhausting retries.
+    skipped   — not executed (e.g. a branch not taken).
+    """
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class WorkflowTriggerKindEnum(str, Enum):
+    """How a stored trigger fires a workflow (manual isn't stored — it's the
+    Run button).
+
+    webhook — a public token URL is POSTed to; the request body is the payload.
+    cron    — a schedule fires it (config holds the cron expression). [M4]
+    event   — an internal event fires it (config names the event). [later]
+    """
+    WEBHOOK = "webhook"
+    CRON = "cron"
+    EVENT = "event"
+
+
+class WorkflowTriggerStatusEnum(str, Enum):
+    """Whether a trigger is live.
+
+    active   — armed; will fire.
+    disabled — paused without deletion (webhook URL 409s, schedule won't fire).
+    """
+    ACTIVE = "active"
+    DISABLED = "disabled"
