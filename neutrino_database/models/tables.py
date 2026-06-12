@@ -685,6 +685,16 @@ chat = Table(
         ForeignKey("dashboard.id", ondelete="CASCADE"),
         nullable=True,
     ),
+    # Back-pointer to the workflow this chat is building (kind=
+    # ``workflow_build``). NULL for ad_hoc / dashboard chats. CASCADE so
+    # deleting a workflow also wipes its build conversation — a workflow
+    # and its build chat share a 1:1 lifecycle, mirroring ``dashboard_id``.
+    Column(
+        "workflow_id",
+        UUID(as_uuid=False),
+        ForeignKey("workflow.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
@@ -705,6 +715,13 @@ chat = Table(
         "created_by",
         text("updated_at DESC"),
         postgresql_where=text("deleted_at IS NULL"),
+    ),
+    # Keys the build-chat lookup (one row per workflow):
+    #   WHERE workflow_id = :wf AND deleted_at IS NULL
+    Index(
+        "ix_chat_workflow_id",
+        "workflow_id",
+        postgresql_where=text("workflow_id IS NOT NULL AND deleted_at IS NULL"),
     ),
 )
 
