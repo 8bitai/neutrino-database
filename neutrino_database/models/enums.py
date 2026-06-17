@@ -366,9 +366,14 @@ class ChatKindEnum(str, Enum):
                       agent. One row per dashboard, set when the
                       dashboard is created. Drafts in the Library
                       are these chats.
+    workflow_build  — the "Build with Neutrino" conversation behind one
+                      Workflow (linked via ``chat.workflow_id``). One row
+                      per workflow; lets the builder resume where the
+                      user left off across reloads.
     """
     AD_HOC = "ad_hoc"
     DASHBOARD_BUILD = "dashboard_build"
+    WORKFLOW_BUILD = "workflow_build"
 
 
 class DAAccessResourceTypeEnum(str, Enum):
