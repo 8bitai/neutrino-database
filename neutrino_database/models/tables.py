@@ -17,6 +17,10 @@ from neutrino_database.models.enums import (
     DAConnectionStatusEnum,
     DADescriptionScopeEnum,
     DADescriptionSourceEnum,
+    DAEnrichmentOperationEnum,
+    DAEnrichmentRunStatusEnum,
+    DAEnrichmentScopeEnum,
+    DAEnrichmentStageStatusEnum,
     DAJoinHintSourceEnum,
     DAJoinTypeEnum,
     DAMetricSourceEnum,
@@ -1715,6 +1719,193 @@ workspace_da_settings = Table(
         onupdate=func.now(),
         nullable=False,
     ),
+)
+
+
+# ---------------------------------------------------------------------------
+# da_enrichment_run (NC-103) — one row per triggered Reprofile / Regenerate
+# run. The command record (scope × operation × target) + Temporal handle +
+# rollup counters. Temporal owns execution truth; this projection is what the
+# Data Curation page polls and re-attaches to across refreshes.
+# ---------------------------------------------------------------------------
+da_enrichment_run = Table(
+    "da_enrichment_run",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # The DA connection is an ``integration`` row (unified integration
+    # model). Mirrors da_catalog_schema.da_connection_id → integration.id;
+    # named ``connection_id`` here to match the DA domain vocabulary.
+    Column(
+        "connection_id",
+        UUID(as_uuid=False),
+        ForeignKey("integration.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+
+    # Discriminators — what this run targets and which stage(s) it runs.
+    Column(
+        "scope",
+        PgEnum(
+            DAEnrichmentScopeEnum,
+            name="da_enrichment_scope",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    Column(
+        "operation",
+        PgEnum(
+            DAEnrichmentOperationEnum,
+            name="da_enrichment_operation",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    # Targets, selected by scope. connection-scope carries neither.
+    Column(
+        "schema_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_catalog_schema.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
+    Column(
+        "table_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_catalog_table.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
+
+    # Lifecycle + rollup. status starts 'pending'; counters drive the
+    # header progress bar without aggregating the item rows on read.
+    Column(
+        "status",
+        PgEnum(
+            DAEnrichmentRunStatusEnum,
+            name="da_enrichment_run_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+        server_default=text("'pending'"),
+    ),
+    Column("total_tables", Integer, nullable=False, server_default=text("0")),
+    Column("completed_tables", Integer, nullable=False, server_default=text("0")),
+    Column("failed_tables", Integer, nullable=False, server_default=text("0")),
+    Column("skipped_tables", Integer, nullable=False, server_default=text("0")),
+
+    # Link back to the durable execution (truth lives in Temporal history).
+    Column("temporal_workflow_id", Text, nullable=True),
+    Column("temporal_run_id", Text, nullable=True),
+
+    # Actor (NULL = system-initiated). SET NULL so a user delete doesn't
+    # cascade away the audit trail of past runs.
+    Column(
+        "created_by_user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column("error", Text, nullable=True),
+
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column("started_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("finished_at", TIMESTAMP(timezone=True), nullable=True),
+
+    # Active-run lookup for the curation page's re-attach-on-refresh.
+    Index("ix_da_enrichment_run_workspace_status", "workspace_id", "status"),
+    Index("ix_da_enrichment_run_connection_status", "connection_id", "status"),
+)
+
+
+# ---------------------------------------------------------------------------
+# da_enrichment_table_item (NC-103) — per-table, two-stage progress for a run.
+# profile_status / describe_status advance independently; NULL on a stage =
+# that stage is not part of this run's operation. Drives the live
+# "Profiling…" / "Generating…" / "Profiled ✓" badges per row.
+# ---------------------------------------------------------------------------
+da_enrichment_table_item = Table(
+    "da_enrichment_table_item",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "run_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_enrichment_run.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "da_catalog_table_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_catalog_table.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Denormalized so the UI renders rows without joining the catalog.
+    Column("schema_name", String(255), nullable=False),
+    Column("table_name", String(255), nullable=False),
+
+    # Two stages. NULL = stage not applicable to this run's operation.
+    Column(
+        "profile_status",
+        PgEnum(
+            DAEnrichmentStageStatusEnum,
+            name="da_enrichment_stage_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=True,
+    ),
+    Column(
+        "describe_status",
+        PgEnum(
+            DAEnrichmentStageStatusEnum,
+            name="da_enrichment_stage_status",
+            values_callable=lambda enum: [e.value for e in enum],
+            create_type=False,
+        ),
+        nullable=True,
+    ),
+    Column("columns_total", Integer, nullable=True),
+    Column("columns_described", Integer, nullable=False, server_default=text("0")),
+    Column("error", Text, nullable=True),
+
+    Column("started_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("finished_at", TIMESTAMP(timezone=True), nullable=True),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    UniqueConstraint(
+        "run_id", "da_catalog_table_id",
+        name="uq_da_enrichment_table_item_run_table",
+    ),
+    Index("ix_da_enrichment_table_item_run", "run_id"),
 )
 
 

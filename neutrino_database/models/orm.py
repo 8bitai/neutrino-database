@@ -6,6 +6,10 @@ from neutrino_database.models.enums import (
     DAAccessResourceTypeEnum,
     DADescriptionScopeEnum,
     DADescriptionSourceEnum,
+    DAEnrichmentOperationEnum,
+    DAEnrichmentRunStatusEnum,
+    DAEnrichmentScopeEnum,
+    DAEnrichmentStageStatusEnum,
     DAJoinHintSourceEnum,
     DAJoinTypeEnum,
     DAMetricSourceEnum,
@@ -1120,6 +1124,67 @@ class WorkspaceDASettings(Base):
     workspace_id: Mapped[str]
     da_include_sample_values: Mapped[bool]
     da_pii_redaction_enabled: Mapped[bool]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class DAEnrichmentRun(Base):
+    """One triggered DA catalog enrichment run (NC-103).
+
+    The command record for a Reprofile / Regenerate the Data Curation page
+    fires: scope × operation × target, the Temporal execution handle, and
+    rollup counters that drive the header progress bar. Temporal owns
+    execution truth; this row is the projection the FE polls and re-attaches
+    to across refreshes.
+    """
+
+    __table__ = tables.da_enrichment_run
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    workspace_id: Mapped[str]
+    connection_id: Mapped[str]
+    scope: Mapped[DAEnrichmentScopeEnum]
+    operation: Mapped[DAEnrichmentOperationEnum]
+    schema_id: Mapped[Optional[str]]
+    table_id: Mapped[Optional[str]]
+    status: Mapped[DAEnrichmentRunStatusEnum]
+    total_tables: Mapped[int]
+    completed_tables: Mapped[int]
+    failed_tables: Mapped[int]
+    skipped_tables: Mapped[int]
+    temporal_workflow_id: Mapped[Optional[str]]
+    temporal_run_id: Mapped[Optional[str]]
+    created_by_user_id: Mapped[Optional[str]]
+    error: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    started_at: Mapped[Optional[datetime]]
+    finished_at: Mapped[Optional[datetime]]
+
+
+class DAEnrichmentTableItem(Base):
+    """Per-table, two-stage progress for a ``DAEnrichmentRun`` (NC-103).
+
+    ``profile_status`` and ``describe_status`` advance independently — NULL
+    on a stage means it is not part of the run's operation. Drives the live
+    "Profiling…" / "Generating…" / "Profiled ✓" badge on each curation row;
+    ``columns_described`` / ``columns_total`` give the "7/12 cols" detail.
+    """
+
+    __table__ = tables.da_enrichment_table_item
+
+    id: Mapped[str]
+    run_id: Mapped[str]
+    da_catalog_table_id: Mapped[str]
+    schema_name: Mapped[str]
+    table_name: Mapped[str]
+    profile_status: Mapped[Optional[DAEnrichmentStageStatusEnum]]
+    describe_status: Mapped[Optional[DAEnrichmentStageStatusEnum]]
+    columns_total: Mapped[Optional[int]]
+    columns_described: Mapped[int]
+    error: Mapped[Optional[str]]
+    started_at: Mapped[Optional[datetime]]
+    finished_at: Mapped[Optional[datetime]]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 

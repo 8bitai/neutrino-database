@@ -408,6 +408,64 @@ class DAAccessEffectEnum(str, Enum):
 
 
 # ---------------------------------------------------------------------------
+# DA catalog enrichment (NC-103) — durable Reprofile / Regenerate runs wired
+# through a Temporal workflow, with a DB-backed progress projection the
+# Data Curation page polls and re-attaches to across refreshes.
+# ---------------------------------------------------------------------------
+
+
+class DAEnrichmentScopeEnum(str, Enum):
+    """What a single enrichment run targets. The curation UI triggers at
+    table and schema level; ``connection`` covers a whole source.
+
+      * ``connection`` → schema_id IS NULL AND table_id IS NULL
+      * ``schema``     → schema_id NOT NULL
+      * ``table``      → table_id NOT NULL
+    """
+    CONNECTION = "connection"
+    SCHEMA = "schema"
+    TABLE = "table"
+
+
+class DAEnrichmentOperationEnum(str, Enum):
+    """Which stage(s) a run performs. The UI exposes Reprofile and
+    Regenerate as independent buttons, so a run is not always both.
+
+      * ``profile``  → warehouse column-profile pass only.
+      * ``describe`` → LLM description generation only.
+      * ``enrich``   → profile then describe (describe consumes the
+        fresh stats), the ordered end-to-end pipeline.
+    """
+    PROFILE = "profile"
+    DESCRIBE = "describe"
+    ENRICH = "enrich"
+
+
+class DAEnrichmentRunStatusEnum(str, Enum):
+    """Lifecycle of a ``da_enrichment_run``. ``completed_with_errors``
+    marks a finished run where at least one table failed but the rest
+    succeeded — the run is not aborted by a single bad table."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    COMPLETED_WITH_ERRORS = "completed_with_errors"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class DAEnrichmentStageStatusEnum(str, Enum):
+    """Per-table, per-stage status on ``da_enrichment_table_item``. NULL
+    on a stage column means that stage is not part of this run's
+    operation (e.g. ``profile_status`` stays NULL for a describe-only
+    run). ``skipped`` is a compliance/eligibility skip, not a failure."""
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+# ---------------------------------------------------------------------------
 # Unified integration hierarchy (WF-VS1) — the credential model shared across
 # ES + DA + WF. See product-feature-roadmap/workflow-execution §5a, §9.
 # ---------------------------------------------------------------------------
