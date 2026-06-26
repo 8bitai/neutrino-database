@@ -20,10 +20,14 @@
 # PATH and PGPASSWORD set in the environment.
 
 .PHONY: help install install-deps test test-verbose \
-        setup-test-db drop-test-db recreate-test-db clean
+        setup-test-db drop-test-db recreate-test-db clean \
+        db-upgrade migrate-fga migrate
 
 ENV_NAME       := neutrino-db
 PYTHON_VERSION := 3.12
+
+# OpenFGA endpoint for the FGA model migrator. Override via env in deploy.
+OPENFGA_API_URL ?= http://localhost:8080
 
 # Test database (used by pytest). Override via env if your local
 # Postgres differs.
@@ -46,6 +50,11 @@ help:
 	@echo "  test                 Run pytest (needs TEST_DATABASE_URL set)"
 	@echo "  test-verbose         Run pytest -v"
 	@echo "  clean                Remove __pycache__ + .pytest_cache"
+	@echo ""
+	@echo "Migrations (run on deploy, in this order):"
+	@echo "  db-upgrade           alembic upgrade head (Postgres schema)"
+	@echo "  migrate-fga          Converge every OpenFGA store to the canonical model"
+	@echo "  migrate              db-upgrade THEN migrate-fga (the full deploy step)"
 
 install:
 	conda create -n $(ENV_NAME) python=$(PYTHON_VERSION) -y
@@ -67,6 +76,23 @@ test-verbose:
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
+
+# ------------------------------------------------------------------
+# Deploy-time migrations. neutrino_database owns ALL schema migrations —
+# Postgres (alembic) and OpenFGA. Run `make migrate` after deploying new
+# code, BEFORE the services start serving. Both steps are idempotent.
+#
+#   DATABASE_URL    — Postgres, for alembic (db-upgrade)
+#   OPENFGA_API_URL — OpenFGA endpoint, for the FGA migrator (migrate-fga)
+# ------------------------------------------------------------------
+
+db-upgrade:
+	alembic upgrade head
+
+migrate-fga:
+	OPENFGA_API_URL=$(OPENFGA_API_URL) python -m neutrino_database.fga.migrate
+
+migrate: db-upgrade migrate-fga
 
 # ------------------------------------------------------------------
 # Test-database management. Mirrors gateway/Makefile.
