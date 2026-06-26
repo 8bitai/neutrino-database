@@ -173,6 +173,7 @@ class ServiceType(str, Enum):
     GEMINI = "gemini"
     AZURE_OPENAI = "azure_openai"
     LANDINGAI = "landingai"
+    BEDROCK = "bedrock"
 
 
 class ProviderCategory(str, Enum):
