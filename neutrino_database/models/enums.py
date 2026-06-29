@@ -203,6 +203,31 @@ class ExcelDatasetStatus(str, Enum):
     DELETED = "deleted"
 
 
+class ChatAttachmentKindEnum(str, Enum):
+    """Which analysis lane an ephemeral chat attachment routes through (NC-137).
+
+    Derived from the uploaded file's mime type at creation; drives both
+    dispatch (tabular -> E2B sandbox/pandas, document -> MinerU extraction,
+    image -> native model vision) and the FE chip icon.
+    """
+    TABULAR = "tabular"      # CSV / Excel
+    DOCUMENT = "document"    # PDF (MinerU parse-only)
+    IMAGE = "image"          # png / jpg (base64 -> vision)
+
+
+class ChatAttachmentStatusEnum(str, Enum):
+    """State machine for an ephemeral chat attachment (NC-137).
+
+    Tabular and image attachments land ``READY`` immediately (no async
+    processing). The document lane goes ``PROCESSING`` while MinerU extracts
+    (Slice B), then ``READY`` or ``FAILED``.
+    """
+    UPLOADED = "uploaded"        # bytes in MinIO; row created
+    PROCESSING = "processing"    # async extraction in flight (document lane)
+    READY = "ready"             # usable in a turn
+    FAILED = "failed"           # upload/extraction failed
+
+
 # ---------------------------------------------------------------------------
 # Data Analytics pillar (NEU-1811 DA-P0).
 #
