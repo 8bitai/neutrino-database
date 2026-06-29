@@ -1,0 +1,16 @@
+# Test/dev deps for neutrino-database. Production runtime is sync
+# (psycopg2 — see requirements.txt + alembic env.py); tests use the
+# async driver so they exercise the same SQLAlchemy 2.x async ORM
+# surface that the gateway and other consumers run against.
+
+# Pinned to match neutrino-gateway/requirements-dev.txt where it overlaps,
+# so the two test surfaces stay aligned. See gateway AUDIT.md fix #6 for
+# the conftest pattern this mirrors (real Postgres, SAVEPOINT-rollback
+# isolation, no SQLite shim).
+
+pytest==8.4.2
+pytest-asyncio==1.2.0
+asyncpg==0.30.0
+# SQLAlchemy 2.x async needs greenlet at runtime; not auto-pulled on
+# macOS arm64 wheels, so pin explicitly. Same gotcha hit in the gateway.
+greenlet==3.2.4
