@@ -89,7 +89,7 @@ files = Table(
     # record-source connectors (Jira issues / Confluence pages / Slack
     # messages have none of these). File-source rows still populate them.
     Column("original_filename", String, nullable=True),
-    Column("file_type", String(20), nullable=True),
+    Column("file_type", String(255), nullable=True),  # full MIME content-type (Office MIMEs exceed 20)
     Column("storage_uri", Text, nullable=True),
     Column("file_size_bytes", BigInteger, nullable=True),
     Column("file_sha256", String(64), nullable=True),
