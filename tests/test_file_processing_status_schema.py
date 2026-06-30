@@ -121,11 +121,12 @@ async def _cleanup(conn, tenant_id):
 
 
 @pytest.mark.asyncio
-async def test_file_processing_status_enum_has_all_eleven_values(test_engine):
+async def test_file_processing_status_enum_has_all_twelve_values(test_engine):
     expected = {
         "pending",
         "fetching",
         "fetched",
+        "converting",
         "parsing",
         "chunking",
         "embedding",
@@ -160,6 +161,7 @@ def test_python_enum_matches_db_enum_values():
         "pending",
         "fetching",
         "fetched",
+        "converting",
         "parsing",
         "chunking",
         "embedding",
