@@ -10,6 +10,8 @@ from neutrino_database.models.base import metadata
 from neutrino_database.models.enums import (
     AgentMessageRole,
     AllowedModuleEnum,
+    ChatAttachmentKindEnum,
+    ChatAttachmentStatusEnum,
     ChatKindEnum,
     ConnectionStatus,
     DAAccessEffectEnum,
@@ -87,7 +89,7 @@ files = Table(
     # record-source connectors (Jira issues / Confluence pages / Slack
     # messages have none of these). File-source rows still populate them.
     Column("original_filename", String, nullable=True),
-    Column("file_type", String(20), nullable=True),
+    Column("file_type", String(255), nullable=True),  # full MIME content-type (Office MIMEs exceed 20)
     Column("storage_uri", Text, nullable=True),
     Column("file_size_bytes", BigInteger, nullable=True),
     Column("file_sha256", String(64), nullable=True),
@@ -746,6 +748,78 @@ message = Table(
     Index("ix_message_chat_created_at", "chat_id", "created_at"),
     Index("ix_message_tenant_chat", "tenant_id", "chat_id"),
     Index("ix_message_user_id", "user_id"),
+)
+
+
+# NC-137 — ephemeral, conversation-scoped file attachments for Unified
+# Chat (Claude-style upload-and-analyse). DELIBERATELY separate from
+# Enterprise Search ingestion (permanent, indexed, ACL'd via `files`) and
+# from the DA Excel-dataset path (Excel -> Postgres queryable schema):
+# these attachments are throwaway, scoped to one chat, TTL'd, and never
+# indexed. Their own status state machine + TTL sweep + delete-with-chat
+# cascade are why this is a table, not a JSONB column on `message`.
+chat_attachment = Table(
+    "chat_attachment",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+    # Nullable: the upload can precede the chat row (the composer uploads
+    # on paperclip-click, before the first message creates the chat) and is
+    # linked when the message is sent. CASCADE purges attachments with the
+    # chat; never-linked (NULL) orphans are reaped by the TTL sweep.
+    Column("chat_id", UUID(as_uuid=False), ForeignKey("chat.id", ondelete="CASCADE"), nullable=True),
+    # Linked when the user sends the message. An attachment's lifecycle is a
+    # subset of its message's, hence CASCADE.
+    Column("message_id", UUID(as_uuid=False), ForeignKey("message.id", ondelete="CASCADE"), nullable=True),
+    # Always set at insert; SET NULL on user delete so a departed uploader
+    # doesn't cascade-delete in-flight attachments (mirrors chat.created_by).
+    Column("uploaded_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+
+    Column("filename", String(512), nullable=False),
+    Column("mime_type", String(255), nullable=False),
+    Column("size_bytes", BigInteger, nullable=False),
+    # MinIO object key for the raw bytes.
+    Column("storage_key", Text, nullable=False),
+    # MinIO object key for MinerU-extracted markdown (document lane, Slice B).
+    Column("extracted_text_key", Text, nullable=True),
+
+    Column(
+        "kind",
+        PgEnum(ChatAttachmentKindEnum, name="chat_attachment_kind",
+               values_callable=lambda enum: [e.value for e in enum]),
+        nullable=False,
+    ),
+    Column(
+        "status",
+        PgEnum(ChatAttachmentStatusEnum, name="chat_attachment_status",
+               values_callable=lambda enum: [e.value for e in enum]),
+        nullable=False,
+        server_default=text("'uploaded'"),
+    ),
+    Column("error", Text, nullable=True),
+
+    # TTL/GC sweep target — when this ephemeral row should be reaped.
+    Column("expires_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+    Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
+
+    # Per-chat attachment list: WHERE chat_id = :c AND deleted_at IS NULL.
+    Index(
+        "ix_chat_attachment_chat_id",
+        "chat_id",
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
+    # TTL/GC reaper scans by expiry; partial so soft-deleted rows don't bloat it.
+    Index(
+        "ix_chat_attachment_expires_at",
+        "expires_at",
+        postgresql_where=text("deleted_at IS NULL AND expires_at IS NOT NULL"),
+    ),
+    # Pre-link listing of a user's recent uploads in a workspace.
+    Index("ix_chat_attachment_uploaded_by", "workspace_id", "uploaded_by"),
 )
 
 
