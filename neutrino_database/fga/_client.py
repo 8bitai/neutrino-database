@@ -33,7 +33,14 @@ class OpenFgaAdminClient:
         async with self._client() as client:
             continuation_token = None
             while True:
-                response = await client.list_stores()
+                # Pass the continuation token back in — without it, an env with
+                # more than one page of stores re-fetches page 1 forever.
+                options = (
+                    {"continuation_token": continuation_token}
+                    if continuation_token
+                    else None
+                )
+                response = await client.list_stores(options=options)
                 ids.extend(s.id for s in response.stores)
                 continuation_token = response.continuation_token
                 if not continuation_token:
