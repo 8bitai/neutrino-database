@@ -10,6 +10,7 @@ from neutrino_database.models.base import metadata
 from neutrino_database.models.enums import (
     AgentMessageRole,
     AllowedModuleEnum,
+    ChatArtifactKindEnum,
     ChatAttachmentDirectionEnum,
     ChatAttachmentKindEnum,
     ChatAttachmentStatusEnum,
@@ -831,6 +832,77 @@ chat_attachment = Table(
     ),
     # Pre-link listing of a user's recent uploads in a workspace.
     Index("ix_chat_attachment_uploaded_by", "workspace_id", "uploaded_by"),
+)
+
+
+# A durable, addressable artifact a unified-agent turn produces (NC-151). Unlike
+# chat_attachment (opaque bytes to download), an artifact is small structured
+# content the FE renders in its own view: a governed chart/table/kpi, or a
+# model-authored generative html/doc page. Deliberately pillar-agnostic — kind +
+# a JSONB content payload model every render family, so DA's ECharts is just one
+# `chart` producer, not a special case. This id is the handle the Share feature
+# (Slice B) mints links against.
+chat_artifact = Table(
+    "chat_artifact",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+    # NOT NULL: an artifact is always produced inside an existing conversation
+    # (the agent emits it mid-turn), so — unlike an upload — it never precedes
+    # the chat. CASCADE so it dies with its chat.
+    Column("chat_id", UUID(as_uuid=False), ForeignKey("chat.id", ondelete="CASCADE"), nullable=False),
+    # The producing assistant message. SET NULL (not CASCADE): an artifact is a
+    # durable, addressable snapshot meant to outlive an edited/deleted message —
+    # a shared link (Slice B) must not 404 because the origin turn was trimmed.
+    Column("message_id", UUID(as_uuid=False), ForeignKey("message.id", ondelete="SET NULL"), nullable=True),
+    # Known at insert; SET NULL so a departed author doesn't cascade-destroy
+    # their artifacts (mirrors chat.created_by / chat_attachment.uploaded_by).
+    Column("created_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+
+    # Render-family discriminator: structured (chart/table/kpi, house-rendered)
+    # vs generative (html/doc, sandboxed-iframe rendered).
+    Column(
+        "kind",
+        PgEnum(ChatArtifactKindEnum, name="chat_artifact_kind",
+               values_callable=lambda enum: [e.value for e in enum]),
+        nullable=False,
+    ),
+    Column("title", String(512), nullable=True),
+    # The whole render payload, inline: structured spec+data, or {"html": ...}
+    # for generative. Inline JSONB (not a MinIO blob) because an artifact is
+    # structured content the FE renders, not opaque download bytes. Large-HTML-
+    # to-blob is tracked debt (TD-ARTIFACT-CONTENT-BLOB), not a v1 concern.
+    Column("content", JSONB, nullable=False),
+    # Claude-style iterate-in-place bumps this ("update this artifact"); the
+    # column exists now so the UX lands without a migration.
+    Column("version", Integer, nullable=False, server_default=text("1")),
+    # Lineage for revisualize/fork. Self-FK SET NULL so a derived artifact
+    # survives its parent's deletion.
+    Column(
+        "derived_from_artifact_id",
+        UUID(as_uuid=False),
+        ForeignKey("chat_artifact.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+    Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
+
+    # Per-chat artifact list: WHERE chat_id = :c AND deleted_at IS NULL.
+    Index(
+        "ix_chat_artifact_chat_id",
+        "chat_id",
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
+    # Reload rehydration fetches a message's artifacts by message_id.
+    Index(
+        "ix_chat_artifact_message_id",
+        "message_id",
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
 )
 
 
