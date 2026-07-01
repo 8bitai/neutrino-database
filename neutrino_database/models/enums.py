@@ -228,6 +228,24 @@ class ChatAttachmentStatusEnum(str, Enum):
     FAILED = "failed"           # upload/extraction failed
 
 
+class ChatAttachmentDirectionEnum(str, Enum):
+    """Provenance of a chat_attachment (NC-149).
+
+    The table serves two mirror-image flows over the same ephemeral,
+    conversation-scoped, TTL'd MinIO-blob lifecycle:
+
+    inbound  — the user uploaded a file for the agent to analyse (NC-137).
+    outbound — the agent generated a file the user asked to "download as a
+               report" (CSV / Excel / PDF / Word), surfaced as a download
+               button (NC-149).
+
+    ``kind`` stays meaningful across both (a PDF/Word export is ``document``,
+    a CSV/Excel export is ``tabular``); direction is the only new axis.
+    """
+    INBOUND = "inbound"      # user upload (NC-137)
+    OUTBOUND = "outbound"    # agent-generated export (NC-149)
+
+
 # ---------------------------------------------------------------------------
 # Data Analytics pillar (NEU-1811 DA-P0).
 #

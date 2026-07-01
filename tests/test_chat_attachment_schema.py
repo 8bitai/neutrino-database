@@ -253,6 +253,56 @@ class TestChatAttachmentEnums:
 
 
 # ---------------------------------------------------------------------------
+# Direction — inbound upload vs outbound export (NC-149)
+# ---------------------------------------------------------------------------
+
+
+class TestChatAttachmentDirection:
+    """NC-149 reuses this table for agent-generated exports (CSV/Excel/PDF/Word
+    the user asks to "generate as a report" and downloads). An export is the
+    same lifecycle as an upload — an ephemeral, conversation-scoped, TTL'd MinIO
+    blob — so it belongs here, not in a parallel table. The only new axis is
+    provenance: ``direction`` = inbound (user uploaded it) vs outbound (the
+    agent produced it). ``kind`` stays meaningful across both — a PDF/Word
+    export is ``document``, a CSV/Excel export is ``tabular`` — so no new kind
+    value is needed."""
+
+    @pytest.mark.asyncio
+    async def test_direction_column_exists(self, test_engine):
+        cols = await _columns(test_engine, "chat_attachment")
+        assert "direction" in cols, (
+            "chat_attachment.direction distinguishes inbound uploads from "
+            "outbound exports (NC-149). Existing columns: "
+            f"{sorted(cols.keys())}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_direction_is_native_enum(self, test_engine):
+        udts = await _udt_names(test_engine, "chat_attachment")
+        assert udts.get("direction") == "chat_attachment_direction", (
+            "chat_attachment.direction must be the native "
+            "chat_attachment_direction enum, not a free-text column. Got udt: "
+            f"{udts.get('direction')!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_direction_not_null_defaults_inbound(self, test_engine):
+        """NOT NULL with a server default of 'inbound' so every existing row and
+        the untouched upload path stay correct with zero code change; only the
+        export path sets 'outbound'."""
+        cols = await _columns(test_engine, "chat_attachment")
+        assert cols["direction"]["nullable"] is False, (
+            "chat_attachment.direction must be NOT NULL — provenance is never "
+            "ambiguous."
+        )
+        default = (cols["direction"].get("default") or "")
+        assert "inbound" in default, (
+            "chat_attachment.direction must default to 'inbound' so the existing "
+            f"upload path is unchanged. Got default: {default!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Indexes — chat list + TTL sweep
 # ---------------------------------------------------------------------------
 
