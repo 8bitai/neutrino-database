@@ -59,6 +59,7 @@ class FileProcessingStatusEnum(str, Enum):
 
     Forward path:
         pending -> fetching -> fetched
+                -> converting (office docs only; PDFs skip it)
                 -> parsing -> chunking -> embedding
                 -> indexing -> acl_replicated -> indexed
     Terminal:
@@ -71,6 +72,9 @@ class FileProcessingStatusEnum(str, Enum):
     PENDING = "pending"
     FETCHING = "fetching"
     FETCHED = "fetched"
+    # Office docs (docx/pptx/xlsx/odt...) are converted to PDF before parsing,
+    # since MinerU pages over a real PDF. PDFs skip this stage entirely.
+    CONVERTING = "converting"
     PARSING = "parsing"
     CHUNKING = "chunking"
     EMBEDDING = "embedding"
