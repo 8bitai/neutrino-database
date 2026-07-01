@@ -263,12 +263,16 @@ class ChatArtifactKindEnum(str, Enum):
       generative — the model authors the markup; rendered in a SANDBOXED iframe
                    (opaque origin, no parent cookie/DOM access) under a strict CSP.
           html   — a self-contained HTML page ("a full dashboard page and more").
+          react  — an interactive React + Tailwind component (compiled in a
+                   sandboxed runtime). The single visual/interactive path — it
+                   supersedes the legacy inline ```jsx answer artifact.
           doc    — a long-form formatted document (markdown-derived HTML).
     """
     CHART = "chart"
     TABLE = "table"
     KPI = "kpi"
     HTML = "html"
+    REACT = "react"
     DOC = "doc"
 
 

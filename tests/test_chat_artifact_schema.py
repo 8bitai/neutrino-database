@@ -154,6 +154,21 @@ class TestChatArtifactColumns:
         )
 
     @pytest.mark.asyncio
+    async def test_kind_enum_has_all_render_families(self, test_engine):
+        """react is the single interactive path (supersedes inline ```jsx)."""
+        async with test_engine.connect() as conn:
+            rows = await conn.execute(
+                sa.text(
+                    "SELECT enumlabel FROM pg_enum e JOIN pg_type t "
+                    "ON e.enumtypid = t.oid WHERE t.typname = 'chat_artifact_kind'"
+                )
+            )
+            labels = {r[0] for r in rows.fetchall()}
+        assert labels == {"chart", "table", "kpi", "html", "react", "doc"}, (
+            f"chat_artifact_kind must carry all render families. Got: {sorted(labels)}"
+        )
+
+    @pytest.mark.asyncio
     async def test_content_is_jsonb_not_null(self, test_engine):
         cols = await _columns(test_engine, "chat_artifact")
         udts = await _udt_names(test_engine, "chat_artifact")
