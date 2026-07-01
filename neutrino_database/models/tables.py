@@ -11,6 +11,8 @@ from neutrino_database.models.enums import (
     AgentMessageRole,
     AllowedModuleEnum,
     ChatArtifactKindEnum,
+    ShareLinkResourceTypeEnum,
+    ShareLinkVisibilityEnum,
     ChatAttachmentDirectionEnum,
     ChatAttachmentKindEnum,
     ChatAttachmentStatusEnum,
@@ -902,6 +904,75 @@ chat_artifact = Table(
         "ix_chat_artifact_message_id",
         "message_id",
         postgresql_where=text("deleted_at IS NULL"),
+    ),
+)
+
+
+# One sharing subsystem (NC-151 Slice B). A share_link points at a resource by
+# (resource_type, resource_id) — polymorphic, so chat_artifact today and
+# dashboards/others later ride ONE audited token stack instead of per-type
+# copies. Improves on DA's dashboard_link_token: a `visibility` axis (public vs
+# workspace-members-with-link), a curator-facing `label`, and last_accessed_at.
+# Keeps DA's hardening: SHA-256 token_hash (UNIQUE), non-secret token_short,
+# optional expiry, soft-delete revoke + who-revoked, CHECK constraints, partial
+# active-link index.
+share_link = Table(
+    "share_link",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+
+    Column(
+        "resource_type",
+        PgEnum(ShareLinkResourceTypeEnum, name="share_link_resource_type",
+               values_callable=lambda enum: [e.value for e in enum]),
+        nullable=False,
+    ),
+    # Polymorphic — references different tables by resource_type, so deliberately
+    # NOT a FK. The service validates the target on mint/resolve.
+    Column("resource_id", UUID(as_uuid=False), nullable=False),
+
+    # public = anyone with the link; workspace = authenticated members only.
+    # Defaults to workspace (private-first) — a snapshot may carry restricted
+    # data, so public exposure must be an explicit, audited choice.
+    Column(
+        "visibility",
+        PgEnum(ShareLinkVisibilityEnum, name="share_link_visibility",
+               values_callable=lambda enum: [e.value for e in enum]),
+        nullable=False,
+        server_default=text("'workspace'"),
+    ),
+
+    # SHA-256 hex of the plaintext token — the DB never stores the secret.
+    Column("token_hash", String(64), nullable=False),
+    # First 8 chars of the plaintext — a non-secret handle for the curator UI.
+    Column("token_short", String(12), nullable=False),
+    # Optional curator-facing name so many links stay distinguishable.
+    Column("label", String(255), nullable=True),
+
+    Column("created_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+    Column("expires_at", TIMESTAMP(timezone=True), nullable=True),
+    # Soft-delete: revoked links stay for the audit trail; NULL = active.
+    Column("revoked_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("revoked_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+
+    Column("accessed_count", Integer, nullable=False, server_default=text("0")),
+    Column("last_accessed_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    CheckConstraint("expires_at IS NULL OR expires_at > created_at", name="ck_share_link_expiry_after_creation"),
+    CheckConstraint("revoked_at IS NULL OR revoked_at >= created_at", name="ck_share_link_revoke_after_creation"),
+
+    # Single-row resolve: hash the token, look it up by this unique index.
+    Index("ix_share_link_token_hash", "token_hash", unique=True),
+    # A resource's active links: WHERE resource_type/id AND revoked_at IS NULL.
+    Index(
+        "ix_share_link_resource_active",
+        "resource_type", "resource_id",
+        postgresql_where=text("revoked_at IS NULL"),
     ),
 )
 

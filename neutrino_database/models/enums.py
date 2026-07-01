@@ -276,6 +276,25 @@ class ChatArtifactKindEnum(str, Enum):
     DOC = "doc"
 
 
+class ShareLinkResourceTypeEnum(str, Enum):
+    """What a share_link points at (NC-151 Slice B). Polymorphic: resource_id
+    references different tables by this type. chat_artifact today; dashboards and
+    others fold onto this one sharing subsystem later (superseding the DA-specific
+    dashboard_link_token)."""
+    CHAT_ARTIFACT = "chat_artifact"
+
+
+class ShareLinkVisibilityEnum(str, Enum):
+    """Who can open a shared link (NC-151 Slice B).
+
+    public    — anyone with the link, no login (a frozen, ACL-scrubbed snapshot).
+    workspace — the link resolves only for authenticated members of the owning
+                workspace ("private with link"). The safe default.
+    """
+    PUBLIC = "public"
+    WORKSPACE = "workspace"
+
+
 # ---------------------------------------------------------------------------
 # Data Analytics pillar (NEU-1811 DA-P0).
 #
