@@ -10,6 +10,7 @@ from neutrino_database.models.base import metadata
 from neutrino_database.models.enums import (
     AgentMessageRole,
     AllowedModuleEnum,
+    ChatAttachmentDirectionEnum,
     ChatAttachmentKindEnum,
     ChatAttachmentStatusEnum,
     ChatKindEnum,
@@ -797,6 +798,16 @@ chat_attachment = Table(
                values_callable=lambda enum: [e.value for e in enum]),
         nullable=False,
         server_default=text("'uploaded'"),
+    ),
+    # Provenance: inbound = user upload (NC-137); outbound = agent-generated
+    # export (NC-149). Defaults to inbound so every existing row and the
+    # untouched upload path stay correct with no code change.
+    Column(
+        "direction",
+        PgEnum(ChatAttachmentDirectionEnum, name="chat_attachment_direction",
+               values_callable=lambda enum: [e.value for e in enum]),
+        nullable=False,
+        server_default=text("'inbound'"),
     ),
     Column("error", Text, nullable=True),
 
