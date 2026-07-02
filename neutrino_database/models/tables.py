@@ -10,6 +10,9 @@ from neutrino_database.models.base import metadata
 from neutrino_database.models.enums import (
     AgentMessageRole,
     AllowedModuleEnum,
+    ChatArtifactKindEnum,
+    ShareLinkResourceTypeEnum,
+    ShareLinkVisibilityEnum,
     ChatAttachmentDirectionEnum,
     ChatAttachmentKindEnum,
     ChatAttachmentStatusEnum,
@@ -831,6 +834,146 @@ chat_attachment = Table(
     ),
     # Pre-link listing of a user's recent uploads in a workspace.
     Index("ix_chat_attachment_uploaded_by", "workspace_id", "uploaded_by"),
+)
+
+
+# A durable, addressable artifact a unified-agent turn produces (NC-151). Unlike
+# chat_attachment (opaque bytes to download), an artifact is small structured
+# content the FE renders in its own view: a governed chart/table/kpi, or a
+# model-authored generative html/doc page. Deliberately pillar-agnostic — kind +
+# a JSONB content payload model every render family, so DA's ECharts is just one
+# `chart` producer, not a special case. This id is the handle the Share feature
+# (Slice B) mints links against.
+chat_artifact = Table(
+    "chat_artifact",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+    # NOT NULL: an artifact is always produced inside an existing conversation
+    # (the agent emits it mid-turn), so — unlike an upload — it never precedes
+    # the chat. CASCADE so it dies with its chat.
+    Column("chat_id", UUID(as_uuid=False), ForeignKey("chat.id", ondelete="CASCADE"), nullable=False),
+    # The producing assistant message. SET NULL (not CASCADE): an artifact is a
+    # durable, addressable snapshot meant to outlive an edited/deleted message —
+    # a shared link (Slice B) must not 404 because the origin turn was trimmed.
+    Column("message_id", UUID(as_uuid=False), ForeignKey("message.id", ondelete="SET NULL"), nullable=True),
+    # Known at insert; SET NULL so a departed author doesn't cascade-destroy
+    # their artifacts (mirrors chat.created_by / chat_attachment.uploaded_by).
+    Column("created_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+
+    # Render-family discriminator: structured (chart/table/kpi, house-rendered)
+    # vs generative (html/doc, sandboxed-iframe rendered).
+    Column(
+        "kind",
+        PgEnum(ChatArtifactKindEnum, name="chat_artifact_kind",
+               values_callable=lambda enum: [e.value for e in enum]),
+        nullable=False,
+    ),
+    Column("title", String(512), nullable=True),
+    # The whole render payload, inline: structured spec+data, or {"html": ...}
+    # for generative. Inline JSONB (not a MinIO blob) because an artifact is
+    # structured content the FE renders, not opaque download bytes. Large-HTML-
+    # to-blob is tracked debt (TD-ARTIFACT-CONTENT-BLOB), not a v1 concern.
+    Column("content", JSONB, nullable=False),
+    # Claude-style iterate-in-place bumps this ("update this artifact"); the
+    # column exists now so the UX lands without a migration.
+    Column("version", Integer, nullable=False, server_default=text("1")),
+    # Lineage for revisualize/fork. Self-FK SET NULL so a derived artifact
+    # survives its parent's deletion.
+    Column(
+        "derived_from_artifact_id",
+        UUID(as_uuid=False),
+        ForeignKey("chat_artifact.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+    Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
+
+    # Per-chat artifact list: WHERE chat_id = :c AND deleted_at IS NULL.
+    Index(
+        "ix_chat_artifact_chat_id",
+        "chat_id",
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
+    # Reload rehydration fetches a message's artifacts by message_id.
+    Index(
+        "ix_chat_artifact_message_id",
+        "message_id",
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
+)
+
+
+# One sharing subsystem (NC-151 Slice B). A share_link points at a resource by
+# (resource_type, resource_id) — polymorphic, so chat_artifact today and
+# dashboards/others later ride ONE audited token stack instead of per-type
+# copies. Improves on DA's dashboard_link_token: a `visibility` axis (public vs
+# workspace-members-with-link), a curator-facing `label`, and last_accessed_at.
+# Keeps DA's hardening: SHA-256 token_hash (UNIQUE), non-secret token_short,
+# optional expiry, soft-delete revoke + who-revoked, CHECK constraints, partial
+# active-link index.
+share_link = Table(
+    "share_link",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False),
+
+    Column(
+        "resource_type",
+        PgEnum(ShareLinkResourceTypeEnum, name="share_link_resource_type",
+               values_callable=lambda enum: [e.value for e in enum]),
+        nullable=False,
+    ),
+    # Polymorphic — references different tables by resource_type, so deliberately
+    # NOT a FK. The service validates the target on mint/resolve.
+    Column("resource_id", UUID(as_uuid=False), nullable=False),
+
+    # public = anyone with the link; workspace = authenticated members only.
+    # Defaults to workspace (private-first) — a snapshot may carry restricted
+    # data, so public exposure must be an explicit, audited choice.
+    Column(
+        "visibility",
+        PgEnum(ShareLinkVisibilityEnum, name="share_link_visibility",
+               values_callable=lambda enum: [e.value for e in enum]),
+        nullable=False,
+        server_default=text("'workspace'"),
+    ),
+
+    # SHA-256 hex of the plaintext token — the DB never stores the secret.
+    Column("token_hash", String(64), nullable=False),
+    # First 8 chars of the plaintext — a non-secret handle for the curator UI.
+    Column("token_short", String(12), nullable=False),
+    # Optional curator-facing name so many links stay distinguishable.
+    Column("label", String(255), nullable=True),
+
+    Column("created_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+    Column("expires_at", TIMESTAMP(timezone=True), nullable=True),
+    # Soft-delete: revoked links stay for the audit trail; NULL = active.
+    Column("revoked_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("revoked_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+
+    Column("accessed_count", Integer, nullable=False, server_default=text("0")),
+    Column("last_accessed_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+
+    CheckConstraint("expires_at IS NULL OR expires_at > created_at", name="ck_share_link_expiry_after_creation"),
+    CheckConstraint("revoked_at IS NULL OR revoked_at >= created_at", name="ck_share_link_revoke_after_creation"),
+
+    # Single-row resolve: hash the token, look it up by this unique index.
+    Index("ix_share_link_token_hash", "token_hash", unique=True),
+    # A resource's active links: WHERE resource_type/id AND revoked_at IS NULL.
+    Index(
+        "ix_share_link_resource_active",
+        "resource_type", "resource_id",
+        postgresql_where=text("revoked_at IS NULL"),
+    ),
 )
 
 

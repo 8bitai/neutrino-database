@@ -250,6 +250,55 @@ class ChatAttachmentDirectionEnum(str, Enum):
     OUTBOUND = "outbound"    # agent-generated export (NC-149)
 
 
+class ChatArtifactKindEnum(str, Enum):
+    """Render-family discriminator for a unified-agent artifact (NC-151).
+
+    An artifact is a durable, addressable output a chat turn emits, rendered in
+    its own view and (Slice B) shareable via link. ``kind`` selects the FE
+    renderer AND the safety posture — it is deliberately pillar-agnostic, so DA's
+    ECharts is just one producer of ``chart`` here, not a special case.
+
+    Two render families:
+      structured — the house owns styling; the model conveys only semantics
+                   (like NC-149 exports). Rendered by trusted in-app components.
+          chart  — an ECharts-shaped spec + its data.
+          table  — columns + rows (typed cells, emphasis roles).
+          kpi    — headline metric(s): value, label, delta.
+      generative — the model authors the markup; rendered in a SANDBOXED iframe
+                   (opaque origin, no parent cookie/DOM access) under a strict CSP.
+          html   — a self-contained HTML page ("a full dashboard page and more").
+          react  — an interactive React + Tailwind component (compiled in a
+                   sandboxed runtime). The single visual/interactive path — it
+                   supersedes the legacy inline ```jsx answer artifact.
+          doc    — a long-form formatted document (markdown-derived HTML).
+    """
+    CHART = "chart"
+    TABLE = "table"
+    KPI = "kpi"
+    HTML = "html"
+    REACT = "react"
+    DOC = "doc"
+
+
+class ShareLinkResourceTypeEnum(str, Enum):
+    """What a share_link points at (NC-151 Slice B). Polymorphic: resource_id
+    references different tables by this type. chat_artifact today; dashboards and
+    others fold onto this one sharing subsystem later (superseding the DA-specific
+    dashboard_link_token)."""
+    CHAT_ARTIFACT = "chat_artifact"
+
+
+class ShareLinkVisibilityEnum(str, Enum):
+    """Who can open a shared link (NC-151 Slice B).
+
+    public    — anyone with the link, no login (a frozen, ACL-scrubbed snapshot).
+    workspace — the link resolves only for authenticated members of the owning
+                workspace ("private with link"). The safe default.
+    """
+    PUBLIC = "public"
+    WORKSPACE = "workspace"
+
+
 # ---------------------------------------------------------------------------
 # Data Analytics pillar (NEU-1811 DA-P0).
 #
