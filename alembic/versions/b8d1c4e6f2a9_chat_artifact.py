@@ -23,7 +23,7 @@ ondelete posture (durable-snapshot intent):
 Pre-production: no rows to backfill.
 
 Revision ID: b8d1c4e6f2a9
-Revises: a7c9e2b4d6f8
+Revises: d2e4f6a8c0b1
 Create Date: 2026-07-01
 """
 
@@ -37,7 +37,7 @@ from sqlalchemy.dialects.postgresql import ENUM, JSONB, UUID
 
 
 revision: str = "b8d1c4e6f2a9"
-down_revision: Union[str, Sequence[str], None] = "a7c9e2b4d6f8"
+down_revision: Union[str, Sequence[str], None] = "d2e4f6a8c0b1"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
