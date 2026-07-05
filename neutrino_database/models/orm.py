@@ -456,6 +456,13 @@ class Chat(Base):
     # 1:1 back-pointer to the Dashboard this chat is building. NULL
     # for ad_hoc chats; CASCADE on dashboard delete.
     dashboard_id: Mapped[Optional[str]]
+    # TD-DA-PILLAR-PERSIST — pillar this chat was initiated on. NULL for
+    # Unified (AUTO, spans all pillars) and legacy pre-column rows.
+    pillar: Mapped[Optional[PillarEnum]]
+    # DA data scope (only set when pillar == DATA_ANALYTICS). Mirrors the
+    # FE text_to_sql_config so a reopened DA chat restores its schema.
+    da_connection_name: Mapped[Optional[str]]
+    da_schema_name: Mapped[Optional[str]]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
     deleted_at: Mapped[Optional[datetime]]

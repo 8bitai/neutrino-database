@@ -705,6 +705,25 @@ chat = Table(
         ForeignKey("workflow.id", ondelete="CASCADE"),
         nullable=True,
     ),
+    # TD-DA-PILLAR-PERSIST — the pillar this chat was initiated on, so the
+    # pillar (and, for DA, its data scope) survive reopen/continue and are
+    # authoritative across devices instead of living only in the browser's
+    # ``pillar_for_thread_<id>`` localStorage stopgap. NULL means "no single
+    # pillar": Unified chats (AUTO, spans all pillars — exempt by design) and
+    # legacy rows created before this column existed. Reuses the shared
+    # ``pillar`` enum type owned by ``workspace.enabled_pillars``
+    # (create_type=False so metadata create_all doesn't try to re-create it).
+    Column(
+        "pillar",
+        PgEnum(PillarEnum, name="pillar", create_type=False),
+        nullable=True,
+    ),
+    # DA data scope captured at chat creation (only set when pillar =
+    # DATA_ANALYTICS). Mirrors the FE ``text_to_sql_config`` so a reopened DA
+    # chat auto-selects its schema and runs against the same connection
+    # without depending on the global ``selected_schema`` localStorage key.
+    Column("da_connection_name", String, nullable=True),
+    Column("da_schema_name", String, nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
