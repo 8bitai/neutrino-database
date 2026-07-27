@@ -590,8 +590,8 @@ member = Table(
 
     Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
     Column("user_id", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
-    Column("email", String(255), nullable=True),
-    Column("name", String(255), nullable=True),
+    Column("email", String(255), nullable=True, comment="pii:email"),
+    Column("name", String(255), nullable=True, comment="pii:name"),
     Column("provider", PgEnum(IdpProviderEnum, name="idp_provider"), nullable=False, default=IdpProviderEnum.AZURE_AD),
     Column("provider_user_id", String(200), nullable=False),
     Column("provider_org_id", String(200), nullable=False),
@@ -1409,7 +1409,23 @@ tenancy_ownership_transfer = Table(
     # Random hex string used in the FE accept URL. Globally unique
     # so the URL alone identifies the transfer; eliminates the need
     # for the FE to know the tenant_id when handling /tenants/transfer/{token}.
+    #
+    # DEPRECATED at-rest (D-1): a plaintext capability token in the DB means any
+    # read-only dump yields a live tenant-takeover URL. Kept NON-NULL for now so
+    # existing consumers (gateway/workflow) that still write/read `token` don't
+    # break — see token_hash/token_short below for the hardened path they must
+    # migrate to. Once every consumer resolves by token_hash, a follow-up
+    # migration can drop this column.
     Column("token", Text, nullable=False, unique=True),
+    # Hardened at-rest shape mirroring share_link / dashboard_link_token:
+    # store SHA-256(plaintext) here, never the secret itself; resolve the accept
+    # URL by hashing the presented token and looking it up on ix_ownership_transfer_token_hash.
+    # Nullable during the additive rollout: rows written by not-yet-updated
+    # consumers carry NULL until backfilled. The mint response is the ONLY place
+    # the plaintext should appear.
+    Column("token_hash", String(64), nullable=True),
+    # First chars of the plaintext — a non-secret handle for UI/audit display.
+    Column("token_short", String(12), nullable=True),
     Column("expires_at", TIMESTAMP(timezone=True), nullable=False),
     Column("accepted_at", TIMESTAMP(timezone=True), nullable=True),
     Column("cancelled_at", TIMESTAMP(timezone=True), nullable=True),
@@ -1432,6 +1448,15 @@ tenancy_ownership_transfer = Table(
         ),
     ),
     Index("ix_ownership_transfer_token", "token"),
+    # Hash-at-rest resolve path (D-1): single-row lookup by SHA-256(token).
+    # Partial + unique so many pre-rollout NULLs coexist while non-null hashes
+    # stay globally unique.
+    Index(
+        "ix_ownership_transfer_token_hash",
+        "token_hash",
+        unique=True,
+        postgresql_where=text("token_hash IS NOT NULL"),
+    ),
     # Partial read index for the retention runner's expiry sweep.
     Index(
         "ix_ownership_transfer_pending_expires",
@@ -3444,7 +3469,19 @@ workflow_trigger = Table(
 
     # Public webhook token (unguessable) — null for cron/event. Unique so the
     # public fire path resolves the workflow in one indexed lookup.
+    #
+    # DEPRECATED at-rest (D-2): this is a bearer capability — a DB dump grants
+    # the ability to fire any workflow via POST /triggers/{token}. Kept for now
+    # so the gateway/workflow services that still write/read `token` don't break;
+    # the hardened token_hash/token_short path below is what they must migrate to.
     Column("token", Text, nullable=True),
+    # Hash-at-rest shape mirroring share_link / dashboard_link_token: store
+    # SHA-256(plaintext) here and resolve the public fire path by hashing the
+    # presented token (uq_workflow_trigger_token_hash). Nullable during the
+    # additive rollout; the plaintext should surface only in the mint response.
+    Column("token_hash", String(64), nullable=True),
+    # First chars of the plaintext — a non-secret handle for the builder UI.
+    Column("token_short", String(12), nullable=True),
 
     # Kind-specific settings (cron expression, webhook auth mode, …).
     Column("config", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
@@ -3473,5 +3510,14 @@ workflow_trigger = Table(
         "token",
         unique=True,
         postgresql_where=text("token IS NOT NULL"),
+    ),
+    # Hash-at-rest resolve path (D-2): O(1) public webhook resolution by
+    # SHA-256(token). Partial + unique so token-less (cron) rows and pre-rollout
+    # NULLs don't collide while non-null hashes stay unique.
+    Index(
+        "uq_workflow_trigger_token_hash",
+        "token_hash",
+        unique=True,
+        postgresql_where=text("token_hash IS NOT NULL"),
     ),
 )

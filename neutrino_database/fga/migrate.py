@@ -113,7 +113,21 @@ async def _cli() -> int:
     from neutrino_database.fga._client import OpenFgaAdminClient
 
     api_url = os.environ.get("OPENFGA_API_URL", "http://localhost:8080")
-    report = await migrate_all_stores(OpenFgaAdminClient(api_url))
+    # D-3: optional preshared-key auth so the model writer can run against a
+    # protected OpenFGA in prod. Unset (local dev) -> unauthenticated, as before.
+    api_token = os.environ.get("OPENFGA_API_TOKEN") or None
+    allow_insecure_http = os.environ.get("OPENFGA_ALLOW_INSECURE_HTTP", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    report = await migrate_all_stores(
+        OpenFgaAdminClient(
+            api_url,
+            api_token=api_token,
+            allow_insecure_http=allow_insecure_http,
+        )
+    )
     print(json.dumps(report.as_dict(), indent=2))
     return 0 if report.ok else 1
 

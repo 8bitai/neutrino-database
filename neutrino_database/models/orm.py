@@ -964,7 +964,13 @@ class TenancyOwnershipTransfer(Base):
     tenant_id: Mapped[str]
     from_user_id: Mapped[Optional[str]]
     to_user_id: Mapped[Optional[str]]
+    # Plaintext capability token (D-1, deprecated at-rest — kept for consumer
+    # backward compat). Prefer resolving via token_hash below.
     token: Mapped[str]
+    # SHA-256(plaintext) + non-secret short handle. Nullable during the additive
+    # hash-at-rest rollout; mirrors DashboardLinkToken/ShareLink.
+    token_hash: Mapped[Optional[str]]
+    token_short: Mapped[Optional[str]]
     expires_at: Mapped[datetime]
     accepted_at: Mapped[Optional[datetime]]
     cancelled_at: Mapped[Optional[datetime]]
@@ -1595,7 +1601,13 @@ class WorkflowTrigger(Base):
     workflow_id: Mapped[str]
     node_id: Mapped[str]
     kind: Mapped[WorkflowTriggerKindEnum]
+    # Plaintext webhook token (D-2, deprecated at-rest — kept for consumer
+    # backward compat). Prefer resolving via token_hash below.
     token: Mapped[Optional[str]]
+    # SHA-256(plaintext) + non-secret short handle. Nullable during the additive
+    # hash-at-rest rollout; mirrors DashboardLinkToken/ShareLink.
+    token_hash: Mapped[Optional[str]]
+    token_short: Mapped[Optional[str]]
     config: Mapped[dict]
     status: Mapped[WorkflowTriggerStatusEnum]
     created_by: Mapped[Optional[str]]
