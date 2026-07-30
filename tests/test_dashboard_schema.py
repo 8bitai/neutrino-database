@@ -158,6 +158,13 @@ class TestDashboardEnums:
             "stacked_bar",
             "pie_chart",
             "donut_chart",
+            "sankey",
+            "scatter",
+            "heatmap",
+            "funnel",
+            "treemap",
+            "radar",
+            "waterfall",
             "table",
             "text",
         }, f"dashboard_widget_type enum missing or wrong: got {values}"
