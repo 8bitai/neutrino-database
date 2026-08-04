@@ -11,21 +11,82 @@ Mirrors connector-service's client construction (``ClientConfiguration`` /
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+from urllib.parse import urlsplit
 
 from openfga_sdk.client import ClientConfiguration, OpenFgaClient
+from openfga_sdk.credentials import CredentialConfiguration, Credentials
+
+logger = logging.getLogger(__name__)
+
+# Hosts for which plain HTTP is acceptable (local dev / in-cluster loopback).
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]", ""})
+
+
+def _validate_api_url(api_url: str, *, allow_insecure_http: bool) -> None:
+    """Fail closed (D-3) when talking to a non-local OpenFGA over plain HTTP.
+
+    A remote OpenFGA reached over ``http://`` sends the store-admin traffic —
+    and any API token — in cleartext. We require ``https`` for non-localhost
+    hosts. ``allow_insecure_http=True`` (env escape hatch) downgrades the error
+    to a warning for operators who terminate TLS at a trusted hop.
+    """
+    scheme = (urlsplit(api_url).scheme or "").lower()
+    host = (urlsplit(api_url).hostname or "").lower()
+
+    if scheme == "https":
+        return
+    if host in _LOCAL_HOSTS:
+        return  # local dev over http is fine
+
+    msg = (
+        f"OpenFGA api_url {api_url!r} uses insecure scheme {scheme!r} to "
+        f"non-local host {host!r}; use https. Set OPENFGA_ALLOW_INSECURE_HTTP=1 "
+        f"to override (e.g. TLS terminated at a trusted proxy)."
+    )
+    if allow_insecure_http:
+        logger.warning("[fga] %s (overridden by OPENFGA_ALLOW_INSECURE_HTTP)", msg)
+        return
+    raise ValueError(msg)
 
 
 class OpenFgaAdminClient:
     """Store-level admin surface: list stores, read a store's latest model,
-    write a new model version to a store."""
+    write a new model version to a store.
 
-    def __init__(self, api_url: str):
+    Auth (D-3): pass ``api_token`` to authenticate to a protected OpenFGA via a
+    preshared key (``Authorization: Bearer <token>``). When ``api_token`` is
+    None the client stays unauthenticated, preserving the local-dev default of
+    an auth-disabled OpenFGA.
+    """
+
+    def __init__(
+        self,
+        api_url: str,
+        *,
+        api_token: str | None = None,
+        allow_insecure_http: bool = False,
+    ):
+        _validate_api_url(api_url, allow_insecure_http=allow_insecure_http)
         self.api_url = api_url
+        self._api_token = api_token
+
+    def _credentials(self) -> Credentials | None:
+        if not self._api_token:
+            return None
+        return Credentials(
+            method="api_token",
+            configuration=CredentialConfiguration(api_token=self._api_token),
+        )
 
     def _client(self, store_id: str | None = None) -> OpenFgaClient:
         return OpenFgaClient(
-            ClientConfiguration(api_url=self.api_url, store_id=store_id, credentials=None)
+            ClientConfiguration(
+                api_url=self.api_url,
+                store_id=store_id,
+                credentials=self._credentials(),
+            )
         )
 
     async def list_store_ids(self) -> list[str]:

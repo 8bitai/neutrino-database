@@ -451,6 +451,13 @@ class DashboardWidgetTypeEnum(str, Enum):
     STACKED_BAR = "stacked_bar"
     PIE_CHART = "pie_chart"
     DONUT_CHART = "donut_chart"
+    SANKEY = "sankey"
+    SCATTER = "scatter"
+    HEATMAP = "heatmap"
+    FUNNEL = "funnel"
+    TREEMAP = "treemap"
+    RADAR = "radar"
+    WATERFALL = "waterfall"
     TABLE = "table"
     TEXT = "text"
 

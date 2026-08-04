@@ -48,6 +48,9 @@ PII_COLUMNS = [
     # Already tagged in C3a-base (audit_log table commit).
     ("audit_log", "ip_address", "pii:ipaddress"),
     ("audit_log", "user_agent", "pii:freetext"),
+    # SSO/IdP membership record — email + display name are PII (VAPT D-7).
+    ("member", "email", "pii:email"),
+    ("member", "name", "pii:name"),
 ]
 
 
