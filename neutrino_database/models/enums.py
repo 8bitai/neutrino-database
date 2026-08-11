@@ -462,6 +462,22 @@ class DashboardWidgetTypeEnum(str, Enum):
     TEXT = "text"
 
 
+class DashboardProposalStateEnum(str, Enum):
+    """What became of one widget proposal from a build-chat turn.
+
+    applied   — materialised onto the canvas (``widget_id`` points at it).
+    removed   — was applied, then the widget was deleted from the canvas.
+                Distinct from never-applied: the build chat must NOT offer
+                "Apply" again, or deleting a widget reads as an invitation to
+                re-add it. Widget deletes are hard deletes, so this row is the
+                only surviving record that the proposal ever landed.
+    dismissed — the admin explicitly declined the proposal.
+    """
+    APPLIED = "applied"
+    REMOVED = "removed"
+    DISMISSED = "dismissed"
+
+
 class ChatKindEnum(str, Enum):
     """What a chat thread is for (D6).
 
