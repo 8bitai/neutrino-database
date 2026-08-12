@@ -1,0 +1,129 @@
+name: deploy-prod
+
+# neutrino-database is baked into every Python service image at build time, so a
+# merge here is a RELEASE TRAIN, not a single deploy:
+#   1. build the migration image from this commit
+#   2. run alembic upgrade head against the prod DB
+#   3. fan out to every dependent service so they rebuild against THIS commit
+# Skipping step 3 would leave services running old models against a new schema.
+
+on:
+  push:
+    branches: [release-cmd]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC federation to Azure — no stored credentials
+  contents: read
+
+env:
+  ACR: crneutrinoprodcin001.azurecr.io
+  IMAGE: neutrino-database-migrate
+  AKS_RG: rg-neutrino-prod-cin-001
+  AKS_NAME: aks-neutrino-prod-cin-001
+  NAMESPACE: neutrino
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    environment: prod
+    outputs:
+      db_sha: ${{ steps.ref.outputs.sha }}
+    steps:
+      # Always build prod from release-cmd: a repository_dispatch/schedule event
+      # would otherwise check out the DEFAULT branch and ship dev code.
+      - uses: actions/checkout@v4
+        with:
+          ref: release-cmd
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Neutrino-Engine/neutrino-k8s
+          ssh-key: ${{ secrets.NEUTRINO_K8S_DEPLOY_KEY }}
+          path: neutrino-k8s
+
+      - id: ref
+        run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: azure/login@v2
+        with:
+          client-id: 8894cdbc-d458-44ed-b8dc-1b42ee827bf8
+          tenant-id: 713c9459-4056-4b3e-9162-591d6d67b03b
+          subscription-id: 9501c581-8593-4b5d-ba3a-9f0aee32b481
+
+      - name: ACR login
+        run: az acr login --name crneutrinoprodcin001
+
+      - name: Build and push migration image
+        run: |
+          TAG="${{ steps.ref.outputs.sha }}"
+          docker build -t "$ACR/$IMAGE:$TAG" -t "$ACR/$IMAGE:release-cmd" .
+          docker push "$ACR/$IMAGE:$TAG"
+          docker push "$ACR/$IMAGE:release-cmd"
+
+      - name: Run alembic migration
+        run: |
+          az aks get-credentials -g "$AKS_RG" -n "$AKS_NAME" --overwrite-existing
+          kubectl delete job neutrino-db-migrate -n "$NAMESPACE" --ignore-not-found
+          IMAGE_TAG="${{ steps.ref.outputs.sha }}" \
+            envsubst < neutrino-k8s/jobs/migrate-job.yaml | kubectl apply -f -
+          # Surface logs whether it passes or fails, then gate on the result.
+          kubectl wait --for=condition=complete job/neutrino-db-migrate -n "$NAMESPACE" --timeout=600s &
+          WAIT_OK=$!
+          kubectl wait --for=condition=failed job/neutrino-db-migrate -n "$NAMESPACE" --timeout=600s && FAILED=1 &
+          WAIT_FAIL=$!
+          wait -n $WAIT_OK $WAIT_FAIL || true
+          kubectl logs job/neutrino-db-migrate -n "$NAMESPACE" --tail=100 || true
+          # Authoritative check: succeeded==1 or the step fails.
+          test "$(kubectl get job neutrino-db-migrate -n "$NAMESPACE" -o jsonpath='{.status.succeeded}')" = "1"
+
+  # Every dependent service rebuilds against this exact commit. Each dispatched
+  # run stops at its own prod approval gate.
+  rebuild-dependents:
+    needs: migrate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        repo:
+          - neutrino-gateway
+          - connector-service
+          - ES-Ingestion-Service
+          - agent-platform
+          - neutrino-workflow-service
+    steps:
+      # workflow_dispatch (not repository_dispatch): it takes an explicit `ref`,
+      # so the service builds from release-cmd. repository_dispatch would run the
+      # workflow from the DEFAULT branch (main), which has no deploy-prod.yml.
+      - name: Dispatch rebuild to ${{ matrix.repo }}
+        env:
+          TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::GH_DISPATCH_TOKEN is not set — cannot trigger ${{ matrix.repo }}."
+            echo "Run deploy-prod manually on ${{ matrix.repo }} (ref release-cmd," \
+                 "neutrino_db_ref=${{ needs.migrate.outputs.db_sha }}) or add the token."
+            exit 0
+          fi
+          curl -sf -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/Neutrino-Engine/${{ matrix.repo }}/actions/workflows/deploy-prod.yml/dispatches" \
+            -d "{\"ref\":\"release-cmd\",\"inputs\":{\"neutrino_db_ref\":\"${{ needs.migrate.outputs.db_sha }}\"}}"
+          echo "Dispatched ${{ matrix.repo }}@release-cmd to rebuild against neutrino-database@${{ needs.migrate.outputs.db_sha }}"
+
+  summary:
+    needs: [migrate, rebuild-dependents]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {
+            echo "### neutrino-database release train"
+            echo ""
+            echo "- migration image: \`${{ needs.migrate.outputs.db_sha }}\`"
+            echo "- migrate job: ${{ needs.migrate.result }}"
+            echo "- dependent rebuilds dispatched: ${{ needs.rebuild-dependents.result }}"
+            echo ""
+            echo "Each service run waits at its own **prod** approval gate."
+          } >> "$GITHUB_STEP_SUMMARY"
