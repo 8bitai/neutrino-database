@@ -462,6 +462,9 @@ class Chat(Base):
     pillar: Mapped[Optional[PillarEnum]]
     # DA data scope (only set when pillar == DATA_ANALYTICS). Mirrors the
     # FE text_to_sql_config so a reopened DA chat restores its schema.
+    # NC-474 — ``da_connection_id`` is the authoritative pin; the name is kept
+    # for display and for resolving chats created before the column existed.
+    da_connection_id: Mapped[Optional[str]]
     da_connection_name: Mapped[Optional[str]]
     da_schema_name: Mapped[Optional[str]]
     created_at: Mapped[datetime]
