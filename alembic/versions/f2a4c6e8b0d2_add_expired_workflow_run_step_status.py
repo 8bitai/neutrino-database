@@ -26,7 +26,7 @@ Deploy ordering: this migration must be applied BEFORE the neutrino-workflow-
 service change that writes the new value, or those inserts fail.
 
 Revision ID: f2a4c6e8b0d2
-Revises: d4f6b8c0e2a4
+Revises: a7c4e91b2d38
 Create Date: 2026-08-06
 """
 
@@ -37,7 +37,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "f2a4c6e8b0d2"
-down_revision: Union[str, Sequence[str], None] = "d4f6b8c0e2a4"
+down_revision: Union[str, Sequence[str], None] = "a7c4e91b2d38"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
