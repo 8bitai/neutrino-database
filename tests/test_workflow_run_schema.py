@@ -267,12 +267,17 @@ class TestWorkflowRunStepColumns:
 class TestWorkflowRunStepEnum:
     @pytest.mark.asyncio
     async def test_step_status_enum_values(self, test_engine):
+        # Compared against pg_enum sort order, so a new label belongs where its
+        # migration placed it. 'expired' (NC-257) was added AFTER 'skipped': an
+        # unanswered human wait, which is neither a failure (nothing
+        # malfunctioned) nor a success (nobody decided).
         assert await _enum_values(test_engine, "workflow_run_step_status") == [
             "pending",
             "running",
             "succeeded",
             "failed",
             "skipped",
+            "expired",
         ]
 
 

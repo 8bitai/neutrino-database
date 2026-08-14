@@ -326,16 +326,21 @@ class DAConnectionStatusEnum(str, Enum):
 
 
 class DASourceTypeEnum(str, Enum):
-    """Warehouse source types supported by the DA pillar.
+    """Datasource types supported by the DA pillar.
 
-    v1 ships postgres + snowflake + bigquery; mysql + oracle queued. Mongo
-    arrives later via a separate NoSqlBaseAdapter (per feature.md F5).
+    v1 ships postgres + snowflake + bigquery; mysql + oracle queued. Mongo is
+    the first non-relational source, served by a separate NoSqlBaseAdapter
+    (per feature.md F5) that speaks aggregation pipelines rather than SQL.
+
+    Persisted as plain varchar in integration.provider, so adding a member
+    here needs no migration.
     """
     POSTGRES = "postgres"
     SNOWFLAKE = "snowflake"
     BIGQUERY = "bigquery"
     MYSQL = "mysql"
     ORACLE = "oracle"
+    MONGODB = "mongodb"
 
 
 class DATableTypeEnum(str, Enum):
@@ -765,12 +770,21 @@ class WorkflowRunStepStatusEnum(str, Enum):
     succeeded — completed without error.
     failed    — failed after exhausting retries.
     skipped   — not executed (e.g. a branch not taken).
+    expired   — a human-wait node reached its deadline with no answer, after
+                every configured approver tier was notified. Distinct from
+                ``failed`` (nothing malfunctioned — no activity errored and no
+                retries were exhausted) and from ``succeeded`` (nobody decided,
+                so nothing downstream ran). NC-257: a timeout must never read
+                as an approval, and an unanswered gate must be visible as such
+                in the run history rather than hidden behind a green or red
+                row. The run itself stays alive so the Case remains open.
     """
     PENDING = "pending"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     SKIPPED = "skipped"
+    EXPIRED = "expired"
 
 
 class WorkflowTriggerKindEnum(str, Enum):
