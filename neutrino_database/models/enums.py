@@ -326,16 +326,21 @@ class DAConnectionStatusEnum(str, Enum):
 
 
 class DASourceTypeEnum(str, Enum):
-    """Warehouse source types supported by the DA pillar.
+    """Datasource types supported by the DA pillar.
 
-    v1 ships postgres + snowflake + bigquery; mysql + oracle queued. Mongo
-    arrives later via a separate NoSqlBaseAdapter (per feature.md F5).
+    v1 ships postgres + snowflake + bigquery; mysql + oracle queued. Mongo is
+    the first non-relational source, served by a separate NoSqlBaseAdapter
+    (per feature.md F5) that speaks aggregation pipelines rather than SQL.
+
+    Persisted as plain varchar in integration.provider, so adding a member
+    here needs no migration.
     """
     POSTGRES = "postgres"
     SNOWFLAKE = "snowflake"
     BIGQUERY = "bigquery"
     MYSQL = "mysql"
     ORACLE = "oracle"
+    MONGODB = "mongodb"
 
 
 class DATableTypeEnum(str, Enum):
