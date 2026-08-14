@@ -770,12 +770,21 @@ class WorkflowRunStepStatusEnum(str, Enum):
     succeeded — completed without error.
     failed    — failed after exhausting retries.
     skipped   — not executed (e.g. a branch not taken).
+    expired   — a human-wait node reached its deadline with no answer, after
+                every configured approver tier was notified. Distinct from
+                ``failed`` (nothing malfunctioned — no activity errored and no
+                retries were exhausted) and from ``succeeded`` (nobody decided,
+                so nothing downstream ran). NC-257: a timeout must never read
+                as an approval, and an unanswered gate must be visible as such
+                in the run history rather than hidden behind a green or red
+                row. The run itself stays alive so the Case remains open.
     """
     PENDING = "pending"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     SKIPPED = "skipped"
+    EXPIRED = "expired"
 
 
 class WorkflowTriggerKindEnum(str, Enum):
