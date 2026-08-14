@@ -14,6 +14,7 @@ from neutrino_database.models.enums import (
     DAJoinTypeEnum,
     DAMetricSourceEnum,
     DATableTypeEnum,
+    DashboardProposalStateEnum,
     DashboardStatusEnum,
     DashboardVisibilityEnum,
     DashboardWidgetTypeEnum,
@@ -461,6 +462,9 @@ class Chat(Base):
     pillar: Mapped[Optional[PillarEnum]]
     # DA data scope (only set when pillar == DATA_ANALYTICS). Mirrors the
     # FE text_to_sql_config so a reopened DA chat restores its schema.
+    # NC-474 — ``da_connection_id`` is the authoritative pin; the name is kept
+    # for display and for resolving chats created before the column existed.
+    da_connection_id: Mapped[Optional[str]]
     da_connection_name: Mapped[Optional[str]]
     da_schema_name: Mapped[Optional[str]]
     created_at: Mapped[datetime]
@@ -1401,6 +1405,51 @@ class DashboardLinkToken(Base):
     created_by: Mapped[Optional[str]]
     accessed_count: Mapped[int]
     created_at: Mapped[datetime]
+
+class DashboardBuildRun(Base):
+    """One asynchronous build-agent turn. The POST that starts a turn returns
+    this row's id immediately and the agent runs detached, so a dropped
+    connection, a refresh or a rolling deploy no longer loses the turn: the
+    client re-attaches by run id, and ``result_envelope`` holds the outcome for
+    anyone who reconnects after the stream ended.
+    """
+
+    __table__ = tables.dashboard_build_run
+
+    id: Mapped[str]
+    tenant_id: Mapped[str]
+    workspace_id: Mapped[str]
+    dashboard_id: Mapped[str]
+    build_chat_id: Mapped[Optional[str]]
+    user_id: Mapped[Optional[str]]
+    status: Mapped[RunStatus]
+    user_message: Mapped[str]
+    result_envelope: Mapped[Optional[dict]]
+    error: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class DashboardProposalState(Base):
+    """What became of one widget proposal (applied / removed / dismissed),
+    keyed by the build-chat message that carried it plus the proposal's index.
+
+    Exists because widget deletes are hard deletes: without this row, a
+    proposal whose widget was deleted looks identical to one that was never
+    applied, and the build chat offers "Apply" again.
+    """
+
+    __table__ = tables.dashboard_proposal_state
+
+    id: Mapped[str]
+    dashboard_id: Mapped[str]
+    message_id: Mapped[str]
+    proposal_index: Mapped[int]
+    state: Mapped[DashboardProposalStateEnum]
+    widget_id: Mapped[Optional[str]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
 
 # ---------------------------------------------------------------------------
 # Unified integration hierarchy (WF-VS1).

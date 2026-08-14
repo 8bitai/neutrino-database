@@ -172,10 +172,15 @@ class TestDashboardEnums:
     @pytest.mark.asyncio
     async def test_chat_kind_enum(self, test_engine):
         values = await _enum_values(test_engine, "chat_kind")
-        assert set(values) == {"ad_hoc", "dashboard_build"}, (
-            "chat_kind enum splits ad-hoc Q&A from dashboard build threads "
-            "(D6). Drafts in the Library are chat rows with "
-            "kind='dashboard_build'."
+        assert set(values) == {
+            "ad_hoc",
+            "dashboard_build",
+            "workflow_build",
+        }, (
+            "chat_kind enum separates ad-hoc Q&A from the build threads behind "
+            "a dashboard (D6) and a workflow. Drafts in the Library are chat "
+            "rows with kind='dashboard_build'; 'workflow_build' backs the "
+            "'Build with Neutrino' conversation, linked via chat.workflow_id."
         )
 
 

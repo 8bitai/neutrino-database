@@ -32,6 +32,7 @@ from neutrino_database.models.enums import (
     DAMetricSourceEnum,
     DASourceTypeEnum,
     DATableTypeEnum,
+    DashboardProposalStateEnum,
     DashboardStatusEnum,
     DashboardVisibilityEnum,
     DashboardWidgetTypeEnum,
@@ -722,6 +723,18 @@ chat = Table(
     # DATA_ANALYTICS). Mirrors the FE ``text_to_sql_config`` so a reopened DA
     # chat auto-selects its schema and runs against the same connection
     # without depending on the global ``selected_schema`` localStorage key.
+    # NC-474 — the pinned connection as a real FK. ``da_connection_name`` is a
+    # display string with no uniqueness constraint, so once a workspace has more
+    # than one Postgres connector it stops identifying a row (two same-named
+    # connectors made the resolver raise MultipleResultsFound). The name column
+    # stays for display + legacy-row fallback. SET NULL so deleting a connection
+    # doesn't take the chat history with it.
+    Column(
+        "da_connection_id",
+        UUID(as_uuid=False),
+        ForeignKey("integration.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     Column("da_connection_name", String, nullable=True),
     Column("da_schema_name", String, nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
@@ -2103,6 +2116,16 @@ da_enrichment_run = Table(
     # Active-run lookup for the curation page's re-attach-on-refresh.
     Index("ix_da_enrichment_run_workspace_status", "workspace_id", "status"),
     Index("ix_da_enrichment_run_connection_status", "connection_id", "status"),
+    # NC-474 — the same lookup narrowed to one action. Profiling and description
+    # generation run independently, so "is a Generate active here?" filters on
+    # ``operation`` too. The two-column index above still serves the
+    # reconciler's operation-blind sweep.
+    Index(
+        "ix_da_enrichment_run_connection_operation_status",
+        "connection_id",
+        "operation",
+        "status",
+    ),
 )
 
 
@@ -2862,6 +2885,182 @@ dashboard_link_token = Table(
         postgresql_where=text("revoked_at IS NULL"),
     ),
 )
+
+# ---------------------------------------------------------------------------
+# dashboard_build_run — one asynchronous build-agent turn.
+#
+# The build turn used to run inside the HTTP request: a dropped browser tab, a
+# rolling deploy or a proxy idle-timeout lost the whole turn even though the
+# agent had done the work. A run row makes the turn a first-class background
+# job — the POST returns a run id immediately, the agent executes detached, and
+# the client (re)attaches to an SSE stream keyed by that id. Mirrors the
+# unified-chat ``runs`` table, kept separate because the lifecycle, payload
+# (a widget-proposal envelope, not an answer) and retention differ.
+#
+# ``status`` reuses the existing ``run_status`` PgEnum rather than minting a
+# parallel type — the state machine is the same (pending → running →
+# completed | failed | cancelled).
+# ---------------------------------------------------------------------------
+
+dashboard_build_run = Table(
+    "dashboard_build_run",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "dashboard_id",
+        UUID(as_uuid=False),
+        ForeignKey("dashboard.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # The build chat this turn belongs to. SET NULL because chat rows can be
+    # compliance-purged independently of the run's audit trail.
+    Column(
+        "build_chat_id",
+        UUID(as_uuid=False),
+        ForeignKey("chat.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "status",
+        PgEnum(
+            RunStatus,
+            name="run_status",
+            values_callable=lambda enum: [e.value for e in enum],
+            create_type=False,   # owned by the ``runs`` table
+        ),
+        nullable=False,
+        server_default=text("'pending'"),
+    ),
+    Column("user_message", Text, nullable=False),
+    # The finished envelope ({kind, narration, proposed_widgets, options,
+    # message_id}) — what the SSE ``result`` frame carries. Persisted so a
+    # client that reconnects after the stream ended still gets the outcome.
+    Column("result_envelope", JSONB, nullable=True),
+    Column("error", Text, nullable=True),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    # "What's running / what ran last on this dashboard" — the editor's
+    # reattach query on mount.
+    Index(
+        "ix_dashboard_build_run_dashboard_created",
+        "dashboard_id",
+        "created_at",
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# dashboard_proposal_state — what became of each widget proposal.
+#
+# Applied-state used to be inferred by matching a proposal's
+# (widget_type, connection_id, sql) against the widgets on the canvas. Delete
+# the widget and the match disappears, so the build chat offered "Apply" again
+# — which reads as "apply to redo". Widget deletes are hard deletes, so no
+# canvas-derived signal can survive one; this row is the record.
+#
+# Keyed by (message_id, proposal_index): the assistant build-chat message that
+# carried the proposal envelope, plus the proposal's position in it. That pair
+# is exactly what the FE already uses as a card key.
+# ---------------------------------------------------------------------------
+
+dashboard_proposal_state = Table(
+    "dashboard_proposal_state",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "dashboard_id",
+        UUID(as_uuid=False),
+        ForeignKey("dashboard.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # The assistant message carrying the proposals envelope. CASCADE: if the
+    # message is purged the cards are gone from the chat too, so their state
+    # has nothing left to describe.
+    Column(
+        "message_id",
+        UUID(as_uuid=False),
+        ForeignKey("message.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("proposal_index", Integer, nullable=False),
+    Column(
+        "state",
+        PgEnum(
+            DashboardProposalStateEnum,
+            # NOT ``dashboard_proposal_state`` — Postgres keeps types and
+            # tables in one namespace, and the table below claims that name.
+            name="dashboard_proposal_state_kind",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        nullable=False,
+    ),
+    # The widget this proposal produced. SET NULL on widget delete so the row
+    # never dangles; ``state`` is flipped to ``removed`` by the delete path,
+    # which is what preserves the "was applied once" fact.
+    Column(
+        "widget_id",
+        UUID(as_uuid=False),
+        ForeignKey("dashboard_widget.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    # One state per proposal — the upsert target.
+    UniqueConstraint(
+        "message_id",
+        "proposal_index",
+        name="ux_dashboard_proposal_state_message_index",
+    ),
+    # The editor loads every proposal state for a dashboard in one read.
+    Index("ix_dashboard_proposal_state_dashboard", "dashboard_id"),
+    # Delete-widget flips state by widget id.
+    Index("ix_dashboard_proposal_state_widget", "widget_id"),
+)
+
 
 # ---------------------------------------------------------------------------
 # integration — unified credential record (WF-VS1).
