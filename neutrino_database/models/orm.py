@@ -547,6 +547,7 @@ class Workspace(Base):
     description: Mapped[Optional[str]]
     status: Mapped[WorkspaceStatusEnum]
     enabled_pillars: Mapped[List[PillarEnum]]
+    hide_chat_pillars: Mapped[bool]
     created_by: Mapped[Optional[str]]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
