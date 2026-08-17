@@ -2,9 +2,14 @@
 
 OpenFGA authorization models are immutable + versioned and are written only at
 store creation, so a model change in source never reaches existing stores.
-This migrator sweeps every store and writes the canonical model to any store
-whose deployed model is missing or not the current schema — converging all
-stores. Run it on deploy, right after ``alembic upgrade head``.
+This migrator sweeps the stores IT OWNS — those named ``*_file_permissions``,
+the per-workspace document-ACL stores — and writes the canonical model to any
+whose deployed model is missing or not the current schema. Run it on deploy,
+right after ``alembic upgrade head``.
+
+It deliberately does NOT touch the gateway's ``neutrino-tenant-*`` RBAC
+stores, which carry a different model from a different source file. See
+``MANAGED_STORE_SUFFIX``.
 
 Properties:
   * **Idempotent** — a store already at head (semantic hash matches) is skipped;
@@ -45,6 +50,35 @@ class FgaAdminClient(Protocol):
 
     async def write_model(self, store_id: str, model: dict[str, Any]) -> str: ...
 
+    # Optional. When present the migrator uses it to skip stores that belong
+    # to a different model family — see MANAGED_STORE_SUFFIX below. Clients
+    # that don't implement it get the legacy unfiltered sweep.
+    async def list_stores(self) -> list[tuple[str, str]]: ...
+
+
+# NC-494 — this migrator owns exactly ONE model family.
+#
+# ``model.json`` here is the per-workspace **document-ACL** model
+# (user/group/workspace/tenant/doc) used by connector-service and
+# ES-Ingestion for stores named ``<workspace_id>_file_permissions``.
+#
+# The gateway maintains a completely different model on a completely
+# different set of stores: the tenant **RBAC** model
+# (user/role/permission/app/…) on ``neutrino-tenant-<tenant_id>``, sourced
+# from ``neutrino-gateway/app/permissions/authorization_model.json``.
+#
+# ``list_stores()`` returns every store in the cluster, so the original
+# unfiltered sweep wrote the doc-ACL model onto every tenant RBAC store it
+# found — measured at 355 stores on a local cluster. Live permission checks
+# survive that (the gateway pins ``authorization_model_id`` from
+# ``tenant_authz_store``, and old model versions stay readable), but every
+# tenant store is left misreporting its own schema, the migrator claims
+# success falsely, and any future "read the latest model" path breaks. 31
+# such stores were found already corrupted locally.
+#
+# So: only sweep stores whose name marks them as ours.
+MANAGED_STORE_SUFFIX = "_file_permissions"
+
 
 @dataclass
 class MigrationReport:
@@ -53,6 +87,11 @@ class MigrationReport:
     migrated: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)
+    # NC-494 — stores this migrator deliberately did not touch because they
+    # belong to another model family (e.g. the gateway's tenant RBAC stores).
+    # Reported rather than silently dropped so a "0 migrated" run is
+    # distinguishable from "nothing to do".
+    not_managed: list[str] = field(default_factory=list)
     model_version: str = MODEL_VERSION
 
     @property
@@ -70,6 +109,7 @@ class MigrationReport:
             "migrated": self.migrated,
             "skipped": self.skipped,
             "failed": self.failed,
+            "not_managed": self.not_managed,
             "ok": self.ok,
         }
 
@@ -79,7 +119,30 @@ async def migrate_all_stores(client: FgaAdminClient) -> MigrationReport:
     source = load_model()
     report = MigrationReport()
 
-    store_ids = await client.list_store_ids()
+    # Prefer the name-aware listing so foreign stores can be excluded. A
+    # client that only implements list_store_ids() falls back to the legacy
+    # unfiltered behaviour (and logs that it did).
+    lister = getattr(client, "list_stores", None)
+    if callable(lister):
+        named = await lister()
+        store_ids = [sid for sid, name in named if name.endswith(MANAGED_STORE_SUFFIX)]
+        report.not_managed = sorted(
+            sid for sid, name in named if not name.endswith(MANAGED_STORE_SUFFIX)
+        )
+        logger.info(
+            "[fga-migrate] %d/%d stores are managed by this migrator (suffix %r); "
+            "%d left untouched",
+            len(store_ids), len(named), MANAGED_STORE_SUFFIX, len(report.not_managed),
+        )
+    else:
+        store_ids = await client.list_store_ids()
+        logger.warning(
+            "[fga-migrate] client has no list_stores(); sweeping ALL %d stores "
+            "unfiltered. This will write the document-ACL model onto any tenant "
+            "RBAC store present.",
+            len(store_ids),
+        )
+
     for store_id in store_ids:
         try:
             deployed = await client.read_latest_model(store_id)

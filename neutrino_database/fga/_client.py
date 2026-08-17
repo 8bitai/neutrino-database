@@ -89,6 +89,28 @@ class OpenFgaAdminClient:
             )
         )
 
+    async def list_stores(self) -> list[tuple[str, str]]:
+        """Return ``(store_id, store_name)`` for every store.
+
+        NC-494 — the migrator needs the NAME to tell its own stores apart from
+        the gateway's tenant RBAC stores; ``list_store_ids`` throws that away.
+        """
+        out: list[tuple[str, str]] = []
+        async with self._client() as client:
+            continuation_token = None
+            while True:
+                options = (
+                    {"continuation_token": continuation_token}
+                    if continuation_token
+                    else None
+                )
+                response = await client.list_stores(options=options)
+                out.extend((s.id, s.name) for s in response.stores)
+                continuation_token = response.continuation_token
+                if not continuation_token:
+                    break
+        return out
+
     async def list_store_ids(self) -> list[str]:
         ids: list[str] = []
         async with self._client() as client:

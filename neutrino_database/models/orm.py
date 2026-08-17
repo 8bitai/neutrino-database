@@ -30,6 +30,7 @@ from neutrino_database.models.enums import (
     MemberSourceEnum,
     MessageRoleEnum,
     PillarEnum,
+    PlatformUserStatusEnum,
     RetrievalStrategyEnum,
     RouterModeEnum,
     RunStatus,
@@ -315,6 +316,28 @@ class User(Base):
         foreign_keys="Provider.created_by",
         back_populates="creator"
     )
+
+class PlatformUser(Base):
+    """ORM wrapper for platform_user table (NC-494).
+
+    A cross-tenant operator. Has no ``tenant_id`` and no relationship to
+    ``Tenant`` — that absence is the point: nothing about this row is scoped
+    to a tenant, so no tenant-scoped query can ever return one.
+    """
+    __table__ = tables.platform_user
+
+    id: Mapped[str]
+    email: Mapped[str]
+    display_name: Mapped[Optional[str]]
+    status: Mapped[PlatformUserStatusEnum]
+    password_hash: Mapped[str]
+    must_change_password: Mapped[bool]
+    password_changed_at: Mapped[Optional[datetime]]
+    last_login_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+    deleted_at: Mapped[Optional[datetime]]
+
 
 class TenantIdentity(Base):
     """ORM wrapper for tenant_identity table"""

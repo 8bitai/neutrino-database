@@ -57,6 +57,7 @@ from neutrino_database.models.enums import (
     MemberSourceEnum,
     MessageRoleEnum,
     PillarEnum,
+    PlatformUserStatusEnum,
     RetrievalStrategyEnum,
     RouterModeEnum,
     RunStatus,
@@ -551,6 +552,50 @@ user = Table(
     Index("ix_user_tenant_username_lower", "tenant_id", func.lower(Column("username", String(100))), unique=True, postgresql_where=text("username IS NOT NULL")),
     Index("ix_user_email_lower_active", func.lower(Column("email", String(320))), postgresql_where=text("deleted_at IS NULL")),
     Index("ix_user_username_lower_active", func.lower(Column("username", String(100))), postgresql_where=text("deleted_at IS NULL AND username IS NOT NULL")),
+)
+
+# NC-494 — platform (cross-tenant) operator accounts.
+#
+# Deliberately NOT a row in `user`: `user.tenant_id` is NOT NULL, so an
+# operator would have to be parked inside some arbitrary tenant, and every
+# `(tenant_id, email)` uniqueness guarantee would start lying. Worse, a
+# platform bit riding on a normal session token would be forwarded to
+# downstream services by `mint_internal_token`.
+#
+# Email is globally unique here (unlike `user.email`, which is unique only
+# per tenant), so the operator login lookup has none of the cross-tenant
+# ambiguity that `LocalAuthService.login` has to defend against.
+platform_user = Table(
+    "platform_user",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column("email", String(320), nullable=False, comment="pii:email"),
+    Column("display_name", String(255), nullable=True, comment="pii:name"),
+    Column(
+        "status",
+        PgEnum(PlatformUserStatusEnum, name="platform_user_status"),
+        nullable=False,
+        server_default=PlatformUserStatusEnum.ACTIVE.value,
+    ),
+    Column("password_hash", Text, nullable=False),
+    Column("must_change_password", Boolean, nullable=False, server_default="false"),
+    Column("password_changed_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("last_login_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+    Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
+
+    UniqueConstraint("email", name="ux_platform_user_email"),
+    # Case-insensitive uniqueness among live rows, mirroring
+    # ix_user_email_lower_active. Soft-deleted rows are excluded so an
+    # address can be reused after an operator is removed.
+    Index(
+        "ix_platform_user_email_lower_active",
+        func.lower(Column("email", String(320))),
+        unique=True,
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
 )
 
 tenant_identity = Table(

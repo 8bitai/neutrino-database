@@ -32,6 +32,20 @@ class UserStatusEnum(str, Enum):
     DELETED = "DELETED"
 
 
+class PlatformUserStatusEnum(str, Enum):
+    """Lifecycle of a platform (cross-tenant) operator account.
+
+    Deliberately separate from ``UserStatusEnum``: a platform user is never
+    "INVITED" — there is no invitation flow for operators, they are minted by
+    an existing platform admin or the bootstrap CLI. Keeping the enums apart
+    also stops a future ``UserStatusEnum`` value from silently acquiring a
+    meaning on the operator table.
+    """
+
+    ACTIVE = "ACTIVE"
+    DISABLED = "DISABLED"
+
+
 class IdpProviderEnum(str, Enum):
     AZURE_AD = "AZURE_AD"
     GOOGLE_IDENTITY = "GOOGLE_IDENTITY"
