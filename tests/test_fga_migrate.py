@@ -128,3 +128,72 @@ async def test_report_shape_and_ok():
     assert report.ok is True
     d = report.as_dict()
     assert d["migrated"] == ["a"] and d["skipped"] == ["b"]
+
+
+# ── NC-494: the migrator must only touch its own model family ─────────
+
+
+class FakeNamedFgaAdmin(FakeFgaAdmin):
+    """Adds the name-aware listing the real client now provides."""
+
+    def __init__(self, stores, names, fail_write=None):
+        super().__init__(stores, fail_write)
+        self.names = dict(names)
+
+    async def list_stores(self):
+        return [(sid, self.names[sid]) for sid in self.stores]
+
+
+@pytest.mark.asyncio
+async def test_tenant_rbac_stores_are_never_written():
+    """The bug this guards: an unfiltered sweep wrote the document-ACL model
+    onto every ``neutrino-tenant-*`` RBAC store in the cluster (355 of them on
+    a local run; 31 found already corrupted). Those stores belong to the
+    gateway and use a different model from a different source file."""
+    client = FakeNamedFgaAdmin(
+        stores={
+            "s-ws-1": STALE_MODEL,          # ours, needs migrating
+            "s-tenant-1": STALE_MODEL,      # gateway's — must be left alone
+            "s-tenant-2": None,             # gateway's, no model — still alone
+        },
+        names={
+            "s-ws-1": "ws-uuid-1_file_permissions",
+            "s-tenant-1": "neutrino-tenant-aaa",
+            "s-tenant-2": "neutrino-tenant-bbb",
+        },
+    )
+    report = await migrate_all_stores(client)
+
+    assert client.writes == ["s-ws-1"], (
+        "migrator wrote to a store outside its own model family"
+    )
+    assert report.migrated == ["s-ws-1"]
+    assert report.not_managed == ["s-tenant-1", "s-tenant-2"]
+    # And the foreign stores are untouched.
+    assert client.stores["s-tenant-1"] == STALE_MODEL
+    assert client.stores["s-tenant-2"] is None
+
+
+@pytest.mark.asyncio
+async def test_not_managed_stores_are_reported_not_hidden():
+    """A run that migrates nothing must still show what it skipped, so
+    "0 migrated" isn't mistaken for "everything already converged"."""
+    client = FakeNamedFgaAdmin(
+        stores={"s-tenant-1": STALE_MODEL},
+        names={"s-tenant-1": "neutrino-tenant-aaa"},
+    )
+    report = await migrate_all_stores(client)
+    assert report.migrated == [] and report.skipped == []
+    assert report.not_managed == ["s-tenant-1"]
+    assert report.as_dict()["not_managed"] == ["s-tenant-1"]
+    assert report.ok is True
+
+
+@pytest.mark.asyncio
+async def test_legacy_client_without_list_stores_still_works():
+    """Back-compat: a client that only implements list_store_ids() keeps the
+    old unfiltered behaviour rather than silently migrating nothing."""
+    client = FakeFgaAdmin({"s-stale": STALE_MODEL})
+    report = await migrate_all_stores(client)
+    assert report.migrated == ["s-stale"]
+    assert report.not_managed == []

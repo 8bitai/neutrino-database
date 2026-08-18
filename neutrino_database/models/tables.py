@@ -57,6 +57,7 @@ from neutrino_database.models.enums import (
     MemberSourceEnum,
     MessageRoleEnum,
     PillarEnum,
+    PlatformUserStatusEnum,
     RetrievalStrategyEnum,
     RouterModeEnum,
     RunStatus,
@@ -553,6 +554,50 @@ user = Table(
     Index("ix_user_username_lower_active", func.lower(Column("username", String(100))), postgresql_where=text("deleted_at IS NULL AND username IS NOT NULL")),
 )
 
+# NC-494 — platform (cross-tenant) operator accounts.
+#
+# Deliberately NOT a row in `user`: `user.tenant_id` is NOT NULL, so an
+# operator would have to be parked inside some arbitrary tenant, and every
+# `(tenant_id, email)` uniqueness guarantee would start lying. Worse, a
+# platform bit riding on a normal session token would be forwarded to
+# downstream services by `mint_internal_token`.
+#
+# Email is globally unique here (unlike `user.email`, which is unique only
+# per tenant), so the operator login lookup has none of the cross-tenant
+# ambiguity that `LocalAuthService.login` has to defend against.
+platform_user = Table(
+    "platform_user",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column("email", String(320), nullable=False, comment="pii:email"),
+    Column("display_name", String(255), nullable=True, comment="pii:name"),
+    Column(
+        "status",
+        PgEnum(PlatformUserStatusEnum, name="platform_user_status"),
+        nullable=False,
+        server_default=PlatformUserStatusEnum.ACTIVE.value,
+    ),
+    Column("password_hash", Text, nullable=False),
+    Column("must_change_password", Boolean, nullable=False, server_default="false"),
+    Column("password_changed_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("last_login_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+    Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
+
+    UniqueConstraint("email", name="ux_platform_user_email"),
+    # Case-insensitive uniqueness among live rows, mirroring
+    # ix_user_email_lower_active. Soft-deleted rows are excluded so an
+    # address can be reused after an operator is removed.
+    Index(
+        "ix_platform_user_email_lower_active",
+        func.lower(Column("email", String(320))),
+        unique=True,
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
+)
+
 tenant_identity = Table(
     "tenant_identity",
     metadata,
@@ -723,6 +768,18 @@ chat = Table(
     # DATA_ANALYTICS). Mirrors the FE ``text_to_sql_config`` so a reopened DA
     # chat auto-selects its schema and runs against the same connection
     # without depending on the global ``selected_schema`` localStorage key.
+    # NC-474 — the pinned connection as a real FK. ``da_connection_name`` is a
+    # display string with no uniqueness constraint, so once a workspace has more
+    # than one Postgres connector it stops identifying a row (two same-named
+    # connectors made the resolver raise MultipleResultsFound). The name column
+    # stays for display + legacy-row fallback. SET NULL so deleting a connection
+    # doesn't take the chat history with it.
+    Column(
+        "da_connection_id",
+        UUID(as_uuid=False),
+        ForeignKey("integration.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     Column("da_connection_name", String, nullable=True),
     Column("da_schema_name", String, nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
@@ -2104,6 +2161,16 @@ da_enrichment_run = Table(
     # Active-run lookup for the curation page's re-attach-on-refresh.
     Index("ix_da_enrichment_run_workspace_status", "workspace_id", "status"),
     Index("ix_da_enrichment_run_connection_status", "connection_id", "status"),
+    # NC-474 — the same lookup narrowed to one action. Profiling and description
+    # generation run independently, so "is a Generate active here?" filters on
+    # ``operation`` too. The two-column index above still serves the
+    # reconciler's operation-blind sweep.
+    Index(
+        "ix_da_enrichment_run_connection_operation_status",
+        "connection_id",
+        "operation",
+        "status",
+    ),
 )
 
 

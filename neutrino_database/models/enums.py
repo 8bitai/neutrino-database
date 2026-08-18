@@ -32,6 +32,20 @@ class UserStatusEnum(str, Enum):
     DELETED = "DELETED"
 
 
+class PlatformUserStatusEnum(str, Enum):
+    """Lifecycle of a platform (cross-tenant) operator account.
+
+    Deliberately separate from ``UserStatusEnum``: a platform user is never
+    "INVITED" — there is no invitation flow for operators, they are minted by
+    an existing platform admin or the bootstrap CLI. Keeping the enums apart
+    also stops a future ``UserStatusEnum`` value from silently acquiring a
+    meaning on the operator table.
+    """
+
+    ACTIVE = "ACTIVE"
+    DISABLED = "DISABLED"
+
+
 class IdpProviderEnum(str, Enum):
     AZURE_AD = "AZURE_AD"
     GOOGLE_IDENTITY = "GOOGLE_IDENTITY"
@@ -326,16 +340,21 @@ class DAConnectionStatusEnum(str, Enum):
 
 
 class DASourceTypeEnum(str, Enum):
-    """Warehouse source types supported by the DA pillar.
+    """Datasource types supported by the DA pillar.
 
-    v1 ships postgres + snowflake + bigquery; mysql + oracle queued. Mongo
-    arrives later via a separate NoSqlBaseAdapter (per feature.md F5).
+    v1 ships postgres + snowflake + bigquery; mysql + oracle queued. Mongo is
+    the first non-relational source, served by a separate NoSqlBaseAdapter
+    (per feature.md F5) that speaks aggregation pipelines rather than SQL.
+
+    Persisted as plain varchar in integration.provider, so adding a member
+    here needs no migration.
     """
     POSTGRES = "postgres"
     SNOWFLAKE = "snowflake"
     BIGQUERY = "bigquery"
     MYSQL = "mysql"
     ORACLE = "oracle"
+    MONGODB = "mongodb"
 
 
 class DATableTypeEnum(str, Enum):
@@ -765,12 +784,21 @@ class WorkflowRunStepStatusEnum(str, Enum):
     succeeded — completed without error.
     failed    — failed after exhausting retries.
     skipped   — not executed (e.g. a branch not taken).
+    expired   — a human-wait node reached its deadline with no answer, after
+                every configured approver tier was notified. Distinct from
+                ``failed`` (nothing malfunctioned — no activity errored and no
+                retries were exhausted) and from ``succeeded`` (nobody decided,
+                so nothing downstream ran). NC-257: a timeout must never read
+                as an approval, and an unanswered gate must be visible as such
+                in the run history rather than hidden behind a green or red
+                row. The run itself stays alive so the Case remains open.
     """
     PENDING = "pending"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     SKIPPED = "skipped"
+    EXPIRED = "expired"
 
 
 class WorkflowTriggerKindEnum(str, Enum):

@@ -30,6 +30,7 @@ from neutrino_database.models.enums import (
     MemberSourceEnum,
     MessageRoleEnum,
     PillarEnum,
+    PlatformUserStatusEnum,
     RetrievalStrategyEnum,
     RouterModeEnum,
     RunStatus,
@@ -316,6 +317,28 @@ class User(Base):
         back_populates="creator"
     )
 
+class PlatformUser(Base):
+    """ORM wrapper for platform_user table (NC-494).
+
+    A cross-tenant operator. Has no ``tenant_id`` and no relationship to
+    ``Tenant`` — that absence is the point: nothing about this row is scoped
+    to a tenant, so no tenant-scoped query can ever return one.
+    """
+    __table__ = tables.platform_user
+
+    id: Mapped[str]
+    email: Mapped[str]
+    display_name: Mapped[Optional[str]]
+    status: Mapped[PlatformUserStatusEnum]
+    password_hash: Mapped[str]
+    must_change_password: Mapped[bool]
+    password_changed_at: Mapped[Optional[datetime]]
+    last_login_at: Mapped[Optional[datetime]]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+    deleted_at: Mapped[Optional[datetime]]
+
+
 class TenantIdentity(Base):
     """ORM wrapper for tenant_identity table"""
     __table__ = tables.tenant_identity
@@ -462,6 +485,9 @@ class Chat(Base):
     pillar: Mapped[Optional[PillarEnum]]
     # DA data scope (only set when pillar == DATA_ANALYTICS). Mirrors the
     # FE text_to_sql_config so a reopened DA chat restores its schema.
+    # NC-474 — ``da_connection_id`` is the authoritative pin; the name is kept
+    # for display and for resolving chats created before the column existed.
+    da_connection_id: Mapped[Optional[str]]
     da_connection_name: Mapped[Optional[str]]
     da_schema_name: Mapped[Optional[str]]
     created_at: Mapped[datetime]
