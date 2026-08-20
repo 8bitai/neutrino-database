@@ -757,3 +757,122 @@ class TestUserMemorySettings:
                 )
             )
         assert pk["constrained_columns"] == ["user_id"]
+
+
+class TestHardeningColumns:
+    """NC-519 second pass — columns added after an industry/research audit.
+
+    Each exists because of a documented failure mode; the docstrings name it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_new_columns_exist(self, test_engine):
+        cols = await _columns(test_engine, "user_memory")
+        expected = {
+            # Reinforcement gating: hold an inferred memory until a second turn
+            # corroborates it.
+            "observation_count",
+            "status",
+            # The episodic ledger: a memory is a claim ABOUT evidence, not a
+            # replacement for it.
+            "source_excerpt",
+            # Bi-temporal: when it was true, apart from when we learned it.
+            "valid_from",
+            "valid_to",
+        }
+        missing = expected - set(cols.keys())
+        assert not missing, f"user_memory is missing {sorted(missing)}"
+
+    @pytest.mark.asyncio
+    async def test_status_defaults_active_but_the_service_gates_inferences(
+        self, test_engine
+    ):
+        """The COLUMN default is 'active' because it applies to rows any code
+        path creates. Reinforcement gating lives in the service layer, which
+        passes 'candidate' explicitly for origin='auto' — that placement is
+        deliberate: most memories never get a settings-route insert, so the
+        service default is the one that decides."""
+        cols = await _columns(test_engine, "user_memory")
+        assert "active" in (cols["status"].get("default") or "")
+
+    @pytest.mark.asyncio
+    async def test_observation_count_starts_at_one(self, test_engine):
+        cols = await _columns(test_engine, "user_memory")
+        assert "1" in (cols["observation_count"].get("default") or "")
+        assert cols["observation_count"]["nullable"] is False
+
+    @pytest.mark.asyncio
+    async def test_validity_window_may_be_open(self, test_engine):
+        """NULL valid_to means "still true as far as we know" — the common case,
+        and distinct from a closed window that says "was true until"."""
+        cols = await _columns(test_engine, "user_memory")
+        assert cols["valid_from"]["nullable"] is True
+        assert cols["valid_to"]["nullable"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_new_check_constraints_are_present(self, test_engine):
+        async with test_engine.connect() as conn:
+            rows = await conn.execute(
+                sa.text(
+                    "SELECT conname FROM pg_constraint "
+                    "WHERE conrelid = 'user_memory'::regclass AND contype = 'c'"
+                )
+            )
+            names = {r[0] for r in rows.fetchall()}
+        for expected in (
+            "ck_user_memory_status",
+            "ck_user_memory_observation_count",
+            "ck_user_memory_validity_order",
+        ):
+            assert expected in names, f"{expected} is missing"
+
+    @pytest.mark.asyncio
+    async def test_a_backwards_validity_window_is_rejected(self, test_engine):
+        """valid_to before valid_from is not a fact with an odd shape, it is a
+        bug — most likely a supersede applied to the wrong row."""
+        from datetime import UTC, datetime
+
+        async with test_engine.begin() as conn:
+            tenant_id = None
+            try:
+                tenant_id, ws_id, user_id, _c, _m = await _seed_principals(conn)
+                savepoint = await conn.begin_nested()
+                with pytest.raises(sa.exc.IntegrityError):
+                    await conn.execute(
+                        insert(user_memory).values(
+                            **_memory_values(
+                                tenant_id=tenant_id,
+                                user_id=user_id,
+                                workspace_id=ws_id,
+                                valid_from=datetime(2026, 8, 1, tzinfo=UTC),
+                                valid_to=datetime(2026, 3, 1, tzinfo=UTC),
+                            )
+                        )
+                    )
+                await savepoint.rollback()
+            finally:
+                if tenant_id:
+                    await _cleanup(conn, tenant_id)
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_status_is_rejected(self, test_engine):
+        async with test_engine.begin() as conn:
+            tenant_id = None
+            try:
+                tenant_id, ws_id, user_id, _c, _m = await _seed_principals(conn)
+                savepoint = await conn.begin_nested()
+                with pytest.raises(sa.exc.IntegrityError):
+                    await conn.execute(
+                        insert(user_memory).values(
+                            **_memory_values(
+                                tenant_id=tenant_id,
+                                user_id=user_id,
+                                workspace_id=ws_id,
+                                status="archived",
+                            )
+                        )
+                    )
+                await savepoint.rollback()
+            finally:
+                if tenant_id:
+                    await _cleanup(conn, tenant_id)

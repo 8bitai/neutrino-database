@@ -1110,10 +1110,41 @@ user_memory = Table(
     # backs the per-user uniqueness index below.
     Column("content_hash", String(64), nullable=False),
     Column("confidence", Float, nullable=False, server_default=text("0.5")),
+    # How many separate turns have asserted this. Reinforcement, not a guess:
+    # an extractor's confidence number is its own opinion, whereas being said
+    # twice is evidence. Drives promotion out of `candidate` (see `status`).
+    Column("observation_count", Integer, nullable=False, server_default=text("1")),
+    # candidate — extracted once, NOT injected yet. Held until a second
+    #             observation promotes it, which is the cheapest defence against
+    #             the overgeneralisation that makes consolidated memory decay
+    #             below a no-memory baseline (arXiv 2605.12978).
+    # active    — injected into turns.
+    # proposed  — recognised as ORG knowledge, not personal: it names something
+    #             in the DA catalog, so it was routed there as an
+    #             `ai_suggested` description for review instead of becoming one
+    #             analyst's private definition. Never injected.
+    Column("status", String(16), nullable=False, server_default=text("'active'")),
     # auto     — background extraction
     # explicit — the agent called save_memory ("remember that…")
     # manual   — the user typed it into the Memory settings tab
     Column("origin", String(16), nullable=False),
+
+    # The verbatim span this memory was derived from. Keeping it makes a memory
+    # a claim ABOUT evidence rather than a replacement for it: a wrong
+    # abstraction can be re-derived, and a consolidation pass can be diffed
+    # against the source instead of being trusted. Anthropic's Dreams keeps the
+    # input store for this reason; OpenAI's Dreaming V3 overwrites in place and
+    # gives up the ability to tell whether it is working.
+    Column("source_excerpt", Text, nullable=True),
+
+    # BI-TEMPORAL, kept separate from created_at on purpose:
+    #   created_at            — when WE learned it
+    #   valid_from / valid_to — when it was true in the world
+    # "Worked on APAC until March" needs both, and a store that only knows when
+    # it heard something cannot resolve two memories that disagree. NULL
+    # valid_to means "still true as far as we know".
+    Column("valid_from", TIMESTAMP(timezone=True), nullable=True),
+    Column("valid_to", TIMESTAMP(timezone=True), nullable=True),
 
     # Provenance — "learned in this chat". SET NULL, not CASCADE: a memory is a
     # durable conclusion that must outlive the conversation that produced it
@@ -1147,6 +1178,14 @@ user_memory = Table(
     CheckConstraint("scope IN ('user', 'workspace', 'tenant')", name="ck_user_memory_scope"),
     CheckConstraint("kind IN ('fact', 'preference', 'correction')", name="ck_user_memory_kind"),
     CheckConstraint("origin IN ('auto', 'explicit', 'manual')", name="ck_user_memory_origin"),
+    CheckConstraint(
+        "status IN ('candidate', 'active', 'proposed')", name="ck_user_memory_status"
+    ),
+    CheckConstraint("observation_count >= 1", name="ck_user_memory_observation_count"),
+    CheckConstraint(
+        "valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from",
+        name="ck_user_memory_validity_order",
+    ),
     CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_user_memory_confidence_range"),
     CheckConstraint("length(content) > 0", name="ck_user_memory_content_not_blank"),
     # A memory cannot supersede itself — an applier bug would otherwise create a
@@ -1158,6 +1197,12 @@ user_memory = Table(
     Index(
         "ix_user_memory_tenant_user",
         "tenant_id", "user_id",
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
+    # Retrieval only ever wants `active`; the settings tab wants everything.
+    Index(
+        "ix_user_memory_active",
+        "tenant_id", "user_id", "status",
         postgresql_where=text("deleted_at IS NULL"),
     ),
     # Exact-duplicate guard, per user. Partial on deleted_at so re-learning
