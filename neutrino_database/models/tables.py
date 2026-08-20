@@ -1074,6 +1074,19 @@ workspace = Table(
         nullable=False,
         server_default=text("'{}'::pillar[]"),
     ),
+    # NC-500 — presentation, NOT capability. `enabled_pillars` says what
+    # the workspace can do; this says whether the chat page offers the
+    # member a choice about it. True (the default) hides the sidebar
+    # pillar picker and pins chat to Unified, which spans every enabled
+    # pillar anyway — the CXO case, where we configure the pillars and
+    # the executive should never see the plumbing. An admin turns it off
+    # to hand the picker back.
+    Column(
+        "hide_chat_pillars",
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    ),
     Column("created_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
