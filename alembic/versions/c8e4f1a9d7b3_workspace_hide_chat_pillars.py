@@ -32,7 +32,7 @@ drives routing on reopen, so history keeps reporting which data actually
 grounded those answers.
 
 Revision ID: c8e4f1a9d7b3
-Revises: f2a4c6e8b0d2
+Revises: g1h2i3j4k5l6
 Create Date: 2026-08-17
 """
 
@@ -44,7 +44,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c8e4f1a9d7b3"
-down_revision: Union[str, Sequence[str], None] = "f2a4c6e8b0d2"
+down_revision: Union[str, Sequence[str], None] = "g1h2i3j4k5l6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
