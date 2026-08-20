@@ -1054,6 +1054,164 @@ share_link = Table(
 )
 
 
+
+# ---------------------------------------------------------------------------
+# user_memory (NC-519) — long-term, per-user agent memory.
+#
+# NC-416's context window solves conversation LENGTH; it does nothing across
+# conversations, and its compaction actively discards the detail a memory layer
+# wants to keep. This table is the cross-chat half: durable facts, preferences
+# and corrections that survive the chat they were learned in.
+#
+# Postgres is the SOURCE OF TRUTH. A mirror doc lands in the per-tenant
+# Elasticsearch index ``memories_tenant_{tenant}`` purely for hybrid retrieval
+# (BM25 + kNN) and is rebuildable from these rows at any time — so an ES outage
+# degrades recall, never correctness.
+#
+# Scoping: keyed on ``user_id`` (the JWT's ``user_id``), NOT ``member.id``.
+# Document ACLs are member-keyed because the file-permission store keys by
+# member (NC-131), but memory is ours end-to-end and agent-platform already
+# holds user_id from the internal token — keying on it avoids a
+# connector-service round-trip on every turn.
+#
+# ``kind`` / ``origin`` / ``scope`` are String + CHECK rather than PgEnum, a
+# deliberate deviation from chat_artifact.kind: all three sets are expected to
+# GROW (procedural memories, workspace-shared scope), and extending a CHECK is
+# a one-line migration where ALTER TYPE ... ADD VALUE cannot be rolled back.
+# ---------------------------------------------------------------------------
+user_memory = Table(
+    "user_memory",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    # NOT NULL and CASCADE: a memory has no meaning without its subject, and a
+    # deleted user's memories must not outlive them (GDPR erasure rides the FK).
+    Column("user_id", UUID(as_uuid=False), ForeignKey("user.id", ondelete="CASCADE"), nullable=False),
+    # NULLABLE, unlike chat.workspace_id (X-CHAT-WS-1). v1 always writes it set,
+    # so memory learned in one workspace does not leak into another. NULL is
+    # reserved for "follows the user across workspaces" — a product decision we
+    # have not taken yet, and the column shape must not force it either way.
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=True),
+
+    # Who the memory is ABOUT. 'user' today; 'workspace'/'tenant' are reserved
+    # so team-shared memory needs no migration, only a read-path change.
+    Column("scope", String(16), nullable=False, server_default=text("'user'")),
+    # fact       — durable, reusable state ("owns the APAC region")
+    # preference — changes output shape ("wants the SQL shown")
+    # correction — a domain fix ("revenue means net of returns")
+    # Deliberately no 'episodic': "what happened in chat X" is what chat history
+    # and the artifact index already are, and duplicating it invites recall of
+    # stale narrative.
+    Column("kind", String(32), nullable=False),
+    Column("content", Text, nullable=False),
+    # sha256 of the normalized content. Lets the extractor short-circuit an
+    # exact repeat to NOOP without spending an LLM call on reconciliation, and
+    # backs the per-user uniqueness index below.
+    Column("content_hash", String(64), nullable=False),
+    Column("confidence", Float, nullable=False, server_default=text("0.5")),
+    # auto     — background extraction
+    # explicit — the agent called save_memory ("remember that…")
+    # manual   — the user typed it into the Memory settings tab
+    Column("origin", String(16), nullable=False),
+
+    # Provenance — "learned in this chat". SET NULL, not CASCADE: a memory is a
+    # durable conclusion that must outlive the conversation that produced it
+    # (same reasoning as chat_artifact.message_id).
+    Column("source_chat_id", UUID(as_uuid=False), ForeignKey("chat.id", ondelete="SET NULL"), nullable=True),
+    Column("source_message_id", UUID(as_uuid=False), ForeignKey("message.id", ondelete="SET NULL"), nullable=True),
+
+    # Reconciliation lineage. An UPDATE decision inserts the new row and points
+    # the old one here before soft-deleting it, so "what did we believe, and
+    # when did we stop believing it" is answerable. Self-FK SET NULL so the
+    # superseded row survives deletion of its successor.
+    Column(
+        "superseded_by",
+        UUID(as_uuid=False),
+        ForeignKey("user_memory.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+
+    # Usage telemetry, stamped off the critical path. Drives decay: an unused,
+    # unpinned, low-confidence memory is the first thing to expire.
+    Column("last_used_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("use_count", Integer, nullable=False, server_default=text("0")),
+    # "Always remember this" — exempt from decay and from the retrieval token
+    # budget's drop list.
+    Column("pinned", Boolean, nullable=False, server_default=text("false")),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+    Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
+
+    CheckConstraint("scope IN ('user', 'workspace', 'tenant')", name="ck_user_memory_scope"),
+    CheckConstraint("kind IN ('fact', 'preference', 'correction')", name="ck_user_memory_kind"),
+    CheckConstraint("origin IN ('auto', 'explicit', 'manual')", name="ck_user_memory_origin"),
+    CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_user_memory_confidence_range"),
+    CheckConstraint("length(content) > 0", name="ck_user_memory_content_not_blank"),
+    # A memory cannot supersede itself — an applier bug would otherwise create a
+    # row that is both live and retired.
+    CheckConstraint("superseded_by IS NULL OR superseded_by <> id", name="ck_user_memory_no_self_supersede"),
+
+    # The hot path: every list/retrieve is
+    # WHERE tenant_id = :t AND user_id = :u AND deleted_at IS NULL.
+    Index(
+        "ix_user_memory_tenant_user",
+        "tenant_id", "user_id",
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
+    # Exact-duplicate guard, per user. Partial on deleted_at so re-learning
+    # something the user previously deleted is allowed (they may have deleted it
+    # because it was stale, not because it was wrong forever).
+    Index(
+        "ix_user_memory_dedupe",
+        "tenant_id", "user_id", "content_hash",
+        unique=True,
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
+    # "What did this chat teach us" — provenance drill-down and per-chat purge.
+    Index("ix_user_memory_source_chat", "source_chat_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# user_memory_settings (NC-519) — per-user opt-in for the memory layer.
+#
+# The platform's FIRST user-preferences table: today the Preferences tab writes
+# localStorage only. Kept deliberately narrow for that reason — this is not a
+# general-purpose user-settings bag, and it should not become one.
+#
+# Every boolean defaults FAIL-SAFE (memory OFF), so the feature stays dark for
+# existing users even once the service-level flag is flipped on. Mirrors the
+# shape of workspace_da_settings: scope column as PK, booleans, timestamps.
+# ---------------------------------------------------------------------------
+user_memory_settings = Table(
+    "user_memory_settings",
+    metadata,
+
+    Column(
+        "user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+
+    # Master opt-in. FALSE by default: nothing is extracted and nothing is
+    # injected until the user turns it on in the Memory settings tab.
+    Column("enabled", Boolean, nullable=False, server_default=text("false")),
+    # Per-kind opt-outs, for the user who wants preferences remembered but not
+    # facts about their role. All TRUE so ``enabled`` alone is the only switch a
+    # user has to find.
+    Column("capture_facts", Boolean, nullable=False, server_default=text("true")),
+    Column("capture_preferences", Boolean, nullable=False, server_default=text("true")),
+    Column("capture_corrections", Boolean, nullable=False, server_default=text("true")),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+)
+
+
 workspace = Table(
     "workspace",
     metadata,
