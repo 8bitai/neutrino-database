@@ -41,9 +41,11 @@ Locked design points these tests pin:
     **partial** on ``deleted_at IS NULL`` — re-learning something the user
     deleted earlier must be allowed, because they may have deleted it for being
     stale rather than wrong forever.
-  * ``user_memory_settings.enabled`` defaults **FALSE**. This is the platform's
-    first user-preferences table, and the feature must stay dark per user even
-    after the service-level flag is on.
+  * ``user_memory_settings.enabled`` defaults **TRUE** — memory is opt-OUT. The
+    gate that keeps a deployment dark is the service-level
+    ``unified_memory_enabled`` flag (still False); within an enabled deployment
+    every user captures without finding the settings page. The row records a
+    deliberate choice, which is why absence is not the same as ``false``.
 
 The test engine builds schema from ``tables.py`` via ``metadata.create_all``
 (see conftest); the matching alembic revision ``h2i3j4k5l6m7`` carries the same
@@ -708,9 +710,10 @@ class TestUserMemorySettings:
         assert not missing, f"user_memory_settings missing {sorted(missing)}"
 
     @pytest.mark.asyncio
-    async def test_enabled_defaults_false(self, test_engine):
-        """The whole rollout posture rests on this default: memory stays dark
-        per user even once the service-level flag is on."""
+    async def test_enabled_defaults_true(self, test_engine):
+        """Memory is opt-OUT: a row created by any path captures. The
+        environment-level ``unified_memory_enabled`` flag is what holds a
+        deployment dark, not this column."""
         async with test_engine.begin() as conn:
             tenant_id = None
             try:
@@ -730,12 +733,12 @@ class TestUserMemorySettings:
                         ).where(user_memory_settings.c.user_id == user_id)
                     )
                 ).one()
-                assert row.enabled is False, (
-                    "user_memory_settings.enabled must default FALSE — a row "
-                    "created by any code path must not silently opt the user in."
+                assert row.enabled is True, (
+                    "user_memory_settings.enabled must default TRUE — memory is "
+                    "opt-out, and the environment flag is the dark switch."
                 )
-                # Per-kind switches default ON so `enabled` is the only control
-                # a user has to find.
+                # Per-kind switches default ON too, so `enabled` is the only
+                # control a user needs to find to turn everything off.
                 assert row.capture_facts is True
                 assert row.capture_preferences is True
                 assert row.capture_corrections is True

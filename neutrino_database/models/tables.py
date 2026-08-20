@@ -1181,9 +1181,19 @@ user_memory = Table(
 # localStorage only. Kept deliberately narrow for that reason — this is not a
 # general-purpose user-settings bag, and it should not become one.
 #
-# Every boolean defaults FAIL-SAFE (memory OFF), so the feature stays dark for
-# existing users even once the service-level flag is flipped on. Mirrors the
-# shape of workspace_da_settings: scope column as PK, booleans, timestamps.
+# ``enabled`` defaults TRUE: memory is opt-OUT, not opt-in. The gate that keeps
+# an environment dark is the service-level ``unified_memory_enabled`` flag, which
+# still ships False — so nothing is captured anywhere until an operator turns the
+# feature on for that deployment. Within an enabled deployment, though, every
+# user captures without having to find a settings page first.
+#
+# Note what this means and does not mean: a user who has never opened Settings →
+# Memory has NO ROW here, and the read path resolves that absence to the same
+# defaults, so "never asked" and "opted in" are deliberately indistinguishable.
+# Incognito chats remain excluded regardless.
+#
+# Mirrors the shape of workspace_da_settings: scope column as PK, booleans,
+# timestamps.
 # ---------------------------------------------------------------------------
 user_memory_settings = Table(
     "user_memory_settings",
@@ -1197,9 +1207,10 @@ user_memory_settings = Table(
     ),
     Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
 
-    # Master opt-in. FALSE by default: nothing is extracted and nothing is
-    # injected until the user turns it on in the Memory settings tab.
-    Column("enabled", Boolean, nullable=False, server_default=text("false")),
+    # Master switch. TRUE by default — memory is opt-OUT. Turning it off here is
+    # what stops capture and injection for this user; the service-level
+    # ``unified_memory_enabled`` flag is what keeps a whole environment dark.
+    Column("enabled", Boolean, nullable=False, server_default=text("true")),
     # Per-kind opt-outs, for the user who wants preferences remembered but not
     # facts about their role. All TRUE so ``enabled`` alone is the only switch a
     # user has to find.
