@@ -1404,6 +1404,7 @@ class DashboardWidget(Base):
     viz_spec: Mapped[dict]
     grounding_metadata: Mapped[Optional[dict]]
     created_by_message_id: Mapped[Optional[str]]
+    source_artifact_id: Mapped[Optional[str]]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 

@@ -2826,6 +2826,19 @@ dashboard_widget = Table(
     # The build-chat message that proposed this widget. SET NULL on
     # message purge (compliance) — the widget itself is the ground
     # truth; chat history is the audit trail.
+    # Which chat chart this widget was promoted from (pin-to-dashboard).
+    #   Not derivable from created_by_message_id: native da_chart artifacts are
+    #   persisted before the assistant message is finalized, so
+    #   chat_artifact.message_id is NULL by design — and a message can hold
+    #   several charts, so a message id cannot say WHICH one this came from.
+    #   SET NULL on delete, like created_by_message_id: the widget outlives its
+    #   provenance because the query it runs is its own.
+    Column(
+        "source_artifact_id",
+        UUID(as_uuid=False),
+        ForeignKey("chat_artifact.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     Column(
         "created_by_message_id",
         UUID(as_uuid=False),
@@ -2848,6 +2861,14 @@ dashboard_widget = Table(
 
     # Canonical render-time query — every dashboard load hits this.
     Index("ix_dashboard_widget_dashboard", "dashboard_id"),
+    # Reverse lookup: "which dashboards hold this chat chart?" — asked by the
+    # chat card on render, so it needs to be an index and not a scan. Partial,
+    # since the column is NULL for every build-agent-proposed widget.
+    Index(
+        "ix_dashboard_widget_source_artifact",
+        "source_artifact_id",
+        postgresql_where=text("source_artifact_id IS NOT NULL"),
+    ),
 )
 
 
