@@ -19,11 +19,16 @@ import pytest
 from pydantic import ValidationError
 
 from neutrino_database.models.da_schemas import DashboardWidgetDataBinding
+from neutrino_database.models.enums import (
+    DATA_BINDING_FORMS,
+    DataBindingKindEnum,
+)
 
 
 def _relational(**over):
     return {
         "connection_id": uuid.uuid4(),
+        "kind": DataBindingKindEnum.RELATIONAL,
         "schema_name": "sales",
         "sql": "SELECT region, revenue FROM sales.by_region",
         **over,
@@ -33,6 +38,7 @@ def _relational(**over):
 def _document(**over):
     return {
         "connection_id": uuid.uuid4(),
+        "kind": DataBindingKindEnum.DOCUMENT,
         "database": "analytics",
         "collection": "customers",
         "pipeline": [{"$group": {"_id": "$tier", "n": {"$sum": 1}}}],
@@ -43,12 +49,14 @@ def _document(**over):
 class TestBothFormsAreValid:
     def test_relational_binding(self):
         b = DashboardWidgetDataBinding(**_relational())
-        assert b.is_document is False
+        assert b.resolved_kind is DataBindingKindEnum.RELATIONAL
+        assert b.execute_route == "execute_query"
         assert b.sql.startswith("SELECT")
 
     def test_document_binding(self):
         b = DashboardWidgetDataBinding(**_document())
-        assert b.is_document is True
+        assert b.resolved_kind is DataBindingKindEnum.DOCUMENT
+        assert b.execute_route == "execute_pipeline"
         assert b.collection == "customers"
         assert b.pipeline[0]["$group"]["_id"] == "$tier"
 
@@ -70,7 +78,8 @@ class TestBothFormsAreValid:
         not be mistaken for "no pipeline" — the discriminator is presence, not
         truthiness."""
         b = DashboardWidgetDataBinding(**_document(pipeline=[]))
-        assert b.is_document is True
+        assert b.resolved_kind is DataBindingKindEnum.DOCUMENT
+        assert b.execute_route == "execute_pipeline"
 
 
 class TestExactlyOneForm:
@@ -79,10 +88,12 @@ class TestExactlyOneForm:
 
     def test_both_forms_at_once_is_rejected(self):
         with pytest.raises(ValidationError, match="runs one query"):
-            DashboardWidgetDataBinding(**_relational(pipeline=[{"$match": {}}]))
+            DashboardWidgetDataBinding(
+                **_relational(kind=None, pipeline=[{"$match": {}}])
+            )
 
     def test_neither_form_is_rejected(self):
-        with pytest.raises(ValidationError, match="requires either sql"):
+        with pytest.raises(ValidationError, match="has no query"):
             DashboardWidgetDataBinding(connection_id=uuid.uuid4())
 
     def test_a_connection_alone_is_not_a_query(self):
@@ -103,7 +114,7 @@ class TestEachFormIsComplete:
     def test_a_pipeline_needs_its_target(self, missing):
         """A pipeline with no collection to run against would reach
         connector-service and fail there, per widget, on every load."""
-        with pytest.raises(ValidationError, match="requires database and collection"):
+        with pytest.raises(ValidationError, match=f"requires.*{missing}"):
             DashboardWidgetDataBinding(**_document(**{missing: None}))
 
 
@@ -115,7 +126,7 @@ class TestRoundTrip:
         restored = DashboardWidgetDataBinding.model_validate(
             original.model_dump(mode="json")
         )
-        assert restored.is_document
+        assert restored.resolved_kind is DataBindingKindEnum.DOCUMENT
         assert restored.pipeline == original.pipeline
         assert restored.database == original.database
         assert restored.collection == original.collection
@@ -125,5 +136,112 @@ class TestRoundTrip:
         restored = DashboardWidgetDataBinding.model_validate(
             original.model_dump(mode="json")
         )
-        assert restored.is_document is False
+        assert restored.resolved_kind is DataBindingKindEnum.RELATIONAL
         assert restored.sql == original.sql
+
+
+class TestLegacyBindingsStillWork:
+    """Widgets written before the tag existed have no `kind`. They are all
+    relational, because that was the only form there was."""
+
+    def test_an_untagged_sql_binding_is_inferred_relational(self):
+        b = DashboardWidgetDataBinding(**_relational(kind=None))
+        assert b.kind is DataBindingKindEnum.RELATIONAL
+        assert b.execute_route == "execute_query"
+
+    def test_inference_does_not_mask_an_incomplete_legacy_binding(self):
+        with pytest.raises(ValidationError):
+            DashboardWidgetDataBinding(
+                connection_id=uuid.uuid4(), kind=None, schema_name="sales"
+            )
+
+
+class TestAddingADatasourceIsOneTableEntry:
+    """The scaling property, asserted rather than asserted-in-a-comment.
+
+    A new structured source — Iceberg, Trino, whatever — must not require
+    editing this model, the validator, or any consumer that dispatches on the
+    tag. If someone replaces the tag with shape-sniffing, or hardcodes the two
+    current forms in a branch, these fail.
+    """
+
+    def test_the_model_hardcodes_no_form(self):
+        """Every form the validator enforces comes from the table, so a member
+        added there is enforced with no code change here."""
+        import inspect
+
+        from neutrino_database.models import da_schemas
+
+        source = inspect.getsource(da_schemas.DashboardWidgetDataBinding)
+        validator = source[source.index("_complete_for_its_kind"):]
+        for leaked in ("RELATIONAL", "DOCUMENT", '"sql"', '"pipeline"'):
+            assert leaked not in validator, (
+                f"{leaked} is hardcoded in the validator — adding a datasource "
+                "would mean editing it, which is what the table exists to avoid"
+            )
+
+    def test_the_validator_reads_its_rules_from_the_table(self, monkeypatch):
+        """Adding a datasource means an enum member, a table row, and that
+        source's own fields — never a new branch in the validator.
+
+        Proved by changing an EXISTING kind's requirements and watching
+        enforcement follow, with no code edit: if the rules were hardcoded, the
+        binding below would still validate.
+        """
+        stricter = dict(DATA_BINDING_FORMS)
+        stricter[DataBindingKindEnum.RELATIONAL] = {
+            "required": ("schema_name", "sql", "params"),
+            "execute_route": "execute_iceberg",
+        }
+        monkeypatch.setattr(
+            "neutrino_database.models.da_schemas.DATA_BINDING_FORMS", stricter
+        )
+
+        with pytest.raises(ValidationError, match="requires params"):
+            DashboardWidgetDataBinding(**_relational())
+
+        # And the route comes from the table too, not from a constant.
+        b = DashboardWidgetDataBinding(**_relational(params={"snapshot": "latest"}))
+        assert b.execute_route == "execute_iceberg"
+
+    def test_a_table_row_naming_an_unknown_field_fails_readably(self, monkeypatch):
+        """The mistake someone adding a datasource is most likely to make: the
+        table row lands before the model field. That must read as a missing
+        field, not as an AttributeError raised from inside a validator."""
+        broken = dict(DATA_BINDING_FORMS)
+        broken[DataBindingKindEnum.RELATIONAL] = {
+            "required": ("catalog",), "execute_route": "execute_trino",
+        }
+        monkeypatch.setattr(
+            "neutrino_database.models.da_schemas.DATA_BINDING_FORMS", broken
+        )
+        with pytest.raises(ValidationError, match="requires catalog"):
+            DashboardWidgetDataBinding(
+                connection_id=uuid.uuid4(),
+                kind=DataBindingKindEnum.RELATIONAL,
+            )
+
+    def test_every_kind_has_required_fields_and_a_route(self):
+        """A member with no table row would pass validation and then fail at
+        execute time, per widget, per load."""
+        for kind in DataBindingKindEnum:
+            spec = DATA_BINDING_FORMS.get(kind)
+            assert spec, f"{kind.value} has no DATA_BINDING_FORMS entry"
+            assert spec["required"], f"{kind.value} names no required fields"
+            assert spec["execute_route"], f"{kind.value} names no execute route"
+
+    def test_every_required_field_exists_on_the_model(self):
+        """A table row naming a field the model lacks would make every binding
+        of that kind fail its completeness check with a confusing message."""
+        fields = set(DashboardWidgetDataBinding.model_fields)
+        for kind, spec in DATA_BINDING_FORMS.items():
+            missing = [f for f in spec["required"] if f not in fields]
+            assert not missing, f"{kind.value} requires unknown field(s): {missing}"
+
+    def test_no_two_kinds_share_an_identifying_field(self):
+        """Inference for legacy rows works by which fields are present, so two
+        kinds sharing their whole field set would be indistinguishable."""
+        signatures = {k: frozenset(s["required"]) for k, s in DATA_BINDING_FORMS.items()}
+        assert len(set(signatures.values())) == len(signatures), (
+            f"two kinds have identical required fields: {signatures}"
+        )

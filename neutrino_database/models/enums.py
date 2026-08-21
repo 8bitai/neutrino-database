@@ -458,6 +458,52 @@ class DashboardVisibilityEnum(str, Enum):
     LINK_ONLY = "link_only"
 
 
+class DataBindingKindEnum(str, Enum):
+    """Which query language a dashboard widget's data_binding speaks.
+
+    A widget re-executes its query on every dashboard load, so the binding has
+    to say what kind of query it holds. This is an EXPLICIT tag rather than
+    something each consumer infers from which fields are populated, because
+    inference does not scale: every new datasource would mean editing every
+    reader (the FE's execute call, the public share executor, the pin mapper),
+    and a reader that had not been taught the new shape would silently treat it
+    as one of the old ones.
+
+    With a tag, adding a datasource is: one member here, one row in
+    ``DATA_BINDING_FORMS``, and the DA tool that produces it. Readers dispatch
+    on the tag and need no change.
+
+    relational — SQL over a warehouse / relational database.
+    document   — an aggregation pipeline over a collection (MongoDB).
+
+    Absent on widgets written before this tag existed; those are all relational,
+    and DashboardWidgetDataBinding infers that for them.
+    """
+    RELATIONAL = "relational"
+    DOCUMENT = "document"
+
+
+# Per-kind contract: the fields that must be present, and the connector-service
+# route that executes it. THE table to extend for a new datasource — an Iceberg
+# or Trino binding is a member above plus a row here, and every consumer that
+# dispatches on the tag keeps working untouched.
+#
+# ``execute_route`` is the suffix under
+# ``/api/v1/da/connections/{connection_id}/`` — shared so the authed widget
+# fetch, the anonymous share-link executor and any future caller cannot drift
+# apart on which endpoint runs which binding.
+DATA_BINDING_FORMS: dict[DataBindingKindEnum, dict[str, object]] = {
+    DataBindingKindEnum.RELATIONAL: {
+        "required": ("schema_name", "sql"),
+        "execute_route": "execute_query",
+    },
+    DataBindingKindEnum.DOCUMENT: {
+        "required": ("database", "collection", "pipeline"),
+        "execute_route": "execute_pipeline",
+    },
+}
+
+
 class DashboardWidgetTypeEnum(str, Enum):
     """v1 widget catalog — what the canvas grid can render.
 
