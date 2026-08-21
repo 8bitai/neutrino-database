@@ -632,6 +632,7 @@ class Dashboard(_DABase):
     description: Optional[str] = None
     status: DashboardStatusEnum
     visibility: DashboardVisibilityEnum
+    pinned: bool = False
     # The build chat that authored this dashboard (1:1). May be NULL
     # if the chat row was compliance-purged independently.
     build_chat_id: Optional[UUID] = None

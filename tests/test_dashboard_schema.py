@@ -586,3 +586,49 @@ class TestWidgetSourceArtifact:
             ).scalar_one_or_none()
         assert idx is not None, "reverse-lookup index missing"
         assert "source_artifact_id" in idx
+
+
+class TestDashboardPinned:
+    """dashboard.pinned — keep a board at the top of the sidebar switcher.
+
+    The rail lists dashboards the way it lists chats, and chat rows have had
+    rename / pin / delete for a long time. Pin was the only one with nowhere to
+    go: chat.pinned existed, dashboard had no equivalent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_matches_chat_pinned_exactly(self, test_engine):
+        """Both rails sort by the same rule, so the two columns should not
+        differ in nullability or default — and an existing dashboard must not
+        need a backfill to be un-pinned."""
+        async with test_engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    sa.text(
+                        "SELECT table_name, data_type, is_nullable, "
+                        "column_default FROM information_schema.columns "
+                        "WHERE column_name = 'pinned' "
+                        "AND table_name IN ('chat', 'dashboard') "
+                        "ORDER BY table_name"
+                    )
+                )
+            ).all()
+        shapes = {r[0]: (r[1], r[2], r[3]) for r in rows}
+        assert "dashboard" in shapes, "dashboard.pinned is missing"
+        assert shapes["dashboard"] == shapes["chat"], (
+            f"dashboard.pinned {shapes['dashboard']} differs from "
+            f"chat.pinned {shapes['chat']}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_unpinned(self, test_engine):
+        async with test_engine.connect() as conn:
+            default = (
+                await conn.execute(
+                    sa.text(
+                        "SELECT column_default FROM information_schema.columns "
+                        "WHERE table_name='dashboard' AND column_name='pinned'"
+                    )
+                )
+            ).scalar_one()
+        assert "false" in str(default).lower()

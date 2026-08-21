@@ -1374,6 +1374,7 @@ class Dashboard(Base):
     description: Mapped[Optional[str]]
     status: Mapped[DashboardStatusEnum]
     visibility: Mapped[DashboardVisibilityEnum]
+    pinned: Mapped[bool]
     build_chat_id: Mapped[Optional[str]]
     owner_id: Mapped[Optional[str]]
     created_by: Mapped[Optional[str]]

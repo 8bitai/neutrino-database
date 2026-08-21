@@ -2749,6 +2749,10 @@ dashboard = Table(
         ForeignKey("user.id", ondelete="SET NULL"),
         nullable=True,
     ),
+    # Pinned to the top of the sidebar's dashboard list. Mirrors chat.pinned so
+    # both rails sort by the same rule; a user preference about their workspace,
+    # which is why it is a column and not localStorage.
+    Column("pinned", Boolean, nullable=False, server_default=text("false")),
     Column("published_at", TIMESTAMP(timezone=True), nullable=True),
     Column(
         "created_at",
