@@ -492,14 +492,23 @@ class DataBindingKindEnum(str, Enum):
 # ``/api/v1/da/connections/{connection_id}/`` — shared so the authed widget
 # fetch, the anonymous share-link executor and any future caller cannot drift
 # apart on which endpoint runs which binding.
+#
+# ``body_fields`` are the binding fields that make up that route's request body.
+# Here rather than at each caller because the anonymous share-link executor
+# lives in the gateway and the authed fetch lives in the frontend — two repos
+# that would otherwise each hardcode a per-source body and drift. Note it is
+# NOT simply ``required``: a relational binding needs ``schema_name`` to be
+# valid but the execute route does not take it.
 DATA_BINDING_FORMS: dict[DataBindingKindEnum, dict[str, object]] = {
     DataBindingKindEnum.RELATIONAL: {
         "required": ("schema_name", "sql"),
         "execute_route": "execute_query",
+        "body_fields": ("sql",),
     },
     DataBindingKindEnum.DOCUMENT: {
         "required": ("database", "collection", "pipeline"),
         "execute_route": "execute_pipeline",
+        "body_fields": ("database", "collection", "pipeline"),
     },
 }
 

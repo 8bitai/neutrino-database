@@ -511,6 +511,18 @@ class DashboardWidgetDataBinding(_DABase):
         return str(DATA_BINDING_FORMS[self.resolved_kind]["execute_route"])
 
     @property
+    def execute_body(self) -> dict:
+        """The request body for ``execute_route``.
+
+        Built from ``body_fields`` rather than by a per-kind branch, so a new
+        datasource is still one table row. Not the same as the required fields:
+        a relational binding needs ``schema_name`` to be valid, but the execute
+        route does not take it.
+        """
+        fields = DATA_BINDING_FORMS[self.resolved_kind]["body_fields"]
+        return {f: getattr(self, f) for f in fields}  # type: ignore[union-attr]
+
+    @property
     def resolved_kind(self) -> DataBindingKindEnum:
         """``kind``, or the inferred kind for a legacy binding."""
         return self.kind or DataBindingKindEnum.RELATIONAL

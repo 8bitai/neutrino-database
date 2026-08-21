@@ -221,14 +221,39 @@ class TestAddingADatasourceIsOneTableEntry:
                 kind=DataBindingKindEnum.RELATIONAL,
             )
 
-    def test_every_kind_has_required_fields_and_a_route(self):
-        """A member with no table row would pass validation and then fail at
+    def test_every_kind_has_a_complete_table_row(self):
+        """A member with a missing key would pass validation and then fail at
         execute time, per widget, per load."""
         for kind in DataBindingKindEnum:
             spec = DATA_BINDING_FORMS.get(kind)
             assert spec, f"{kind.value} has no DATA_BINDING_FORMS entry"
-            assert spec["required"], f"{kind.value} names no required fields"
-            assert spec["execute_route"], f"{kind.value} names no execute route"
+            for key in ("required", "execute_route", "body_fields"):
+                assert spec.get(key), f"{kind.value} names no {key}"
+
+    def test_body_fields_are_a_subset_of_the_model(self):
+        """A body field the model lacks would send a null to connector-service."""
+        fields = set(DashboardWidgetDataBinding.model_fields)
+        for kind, spec in DATA_BINDING_FORMS.items():
+            unknown = [f for f in spec["body_fields"] if f not in fields]
+            assert not unknown, f"{kind.value} body names unknown field(s): {unknown}"
+
+    def test_execute_body_carries_the_query_and_nothing_else(self):
+        rel = DashboardWidgetDataBinding(**_relational())
+        assert rel.execute_body == {"sql": _relational()["sql"]}
+        # schema_name is REQUIRED for validity but is not part of the request —
+        # the two lists are deliberately different.
+        assert "schema_name" not in rel.execute_body
+        assert "connection_id" not in rel.execute_body, (
+            "the connection is in the URL, not the body"
+        )
+
+    def test_execute_body_for_a_document_binding(self):
+        doc = DashboardWidgetDataBinding(**_document())
+        assert doc.execute_body == {
+            "database": "analytics",
+            "collection": "customers",
+            "pipeline": [{"$group": {"_id": "$tier", "n": {"$sum": 1}}}],
+        }
 
     def test_every_required_field_exists_on_the_model(self):
         """A table row naming a field the model lacks would make every binding
