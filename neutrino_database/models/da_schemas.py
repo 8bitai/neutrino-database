@@ -35,7 +35,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from neutrino_database.models.enums import (
     DAConnectionStatusEnum,
@@ -450,17 +450,86 @@ class DashboardWidgetPosition(_DABase):
 
 
 class DashboardWidgetDataBinding(_DABase):
-    """How a widget gets its data — inline SQL (Q2 locked in DA-P3
-    design). `query_ref_id` is reserved for the future saved-query
-    indirection (TD-DASH-SAVED-QUERIES-1); when set, ``sql`` is
-    derived from it instead of stored verbatim.
+    """How a widget gets its data — one query, in whichever language its
+    connection speaks.
+
+    A widget is a QUERY, not a snapshot: it re-executes on every dashboard
+    load. Originally that query could only be SQL, which quietly made a
+    dashboard a relational-only surface — a chart over a Mongo collection could
+    be produced in chat but never kept, purely because of where its data lived.
+    That is a distinction the user has no reason to care about, so the binding
+    now carries either shape and the executor is chosen from the shape.
+
+    Exactly one form must be present:
+
+      * **relational** — ``schema_name`` + ``sql``, executed via
+        ``connections/{id}/execute_query``.
+      * **document** — ``database`` + ``collection`` + ``pipeline``, executed
+        via ``connections/{id}/execute_pipeline``.
+
+    Both execute paths already enforce read-only access and schema scope
+    downstream at connector-service, so neither form is more privileged than
+    the other.
+
+    ``query_ref_id`` is reserved for the future saved-query indirection
+    (TD-DASH-SAVED-QUERIES-1); when set, the query is derived from it instead
+    of stored verbatim.
     """
     connection_id: UUID
-    schema_name: str
-    sql: str
+
+    # ── relational form ──────────────────────────────────────────────
+    schema_name: Optional[str] = None
+    sql: Optional[str] = None
+
+    # ── document form (NC — Mongo widgets) ───────────────────────────
+    database: Optional[str] = None
+    collection: Optional[str] = None
+    # An aggregation pipeline: a list of stage documents. Stored verbatim and
+    # forwarded opaquely; connector-service's mongo_guard is what rejects a
+    # write stage, exactly as it does for a pipeline sent from chat.
+    pipeline: Optional[list[dict]] = None
+
     # Optional bind params for parameterised widgets (e.g. filter UI).
     params: Optional[dict] = None
     query_ref_id: Optional[UUID] = None
+
+    @property
+    def is_document(self) -> bool:
+        """True when this binding runs a pipeline rather than SQL."""
+        return self.pipeline is not None
+
+    @model_validator(mode="after")
+    def _exactly_one_query_form(self) -> "DashboardWidgetDataBinding":
+        """Reject a binding that is neither form, or ambiguously both.
+
+        Worth enforcing rather than resolving by precedence: `sql` and
+        `pipeline` select different executors, so a binding carrying both is a
+        widget whose behaviour depends on which branch happens to be checked
+        first. Making that unconstructible is cheaper than making it
+        deterministic.
+        """
+        has_sql = bool(self.sql)
+        has_pipeline = self.pipeline is not None
+
+        if has_sql and has_pipeline:
+            raise ValueError(
+                "data_binding carries both sql and pipeline; a widget runs "
+                "one query"
+            )
+        if has_sql:
+            if not self.schema_name:
+                raise ValueError("a relational binding requires schema_name")
+            return self
+        if has_pipeline:
+            if not (self.database and self.collection):
+                raise ValueError(
+                    "a document binding requires database and collection"
+                )
+            return self
+        raise ValueError(
+            "data_binding requires either sql (relational) or "
+            "database + collection + pipeline (document)"
+        )
 
 
 class DashboardWidgetVizSpec(_DABase):

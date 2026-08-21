@@ -2810,7 +2810,12 @@ dashboard_widget = Table(
     ),
     Column("title", String(255), nullable=False),
     Column("description", Text, nullable=True),
-    # data_binding: { connection_id, schema_name, sql, params? }
+    # data_binding: relational { connection_id, schema_name, sql, params? }
+    #            or document   { connection_id, database, collection, pipeline }
+    #   A widget re-executes its query on every load. Restricting that query to
+    #   SQL made dashboards a relational-only surface: a chart over a Mongo
+    #   collection could be produced in chat but never kept. Both forms are
+    #   validated by DashboardWidgetDataBinding, which enforces exactly one.
     # viz_spec: { chart_type, x_axis, y_axis, series?, format?, ... }
     # grounding_metadata: { tables[], columns[], curator, last_validated_at }
     # All JSONB so we can partial-update specific keys without
