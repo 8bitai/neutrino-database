@@ -38,8 +38,14 @@ user-settings bag.
 Pre-production feature, shipped behind a flag: no rows to backfill.
 
 Revision ID: h2i3j4k5l6m7
-Revises: g1h2i3j4k5l6
+Revises: c8e4f1a9d7b3
 Create Date: 2026-08-20
+
+Re-chained onto NC-500's ``c8e4f1a9d7b3`` rather than ``g1h2i3j4k5l6``. Both
+originally chained off the same parent, which left alembic with two heads once
+the branches merged — and ``make migrate`` runs ``alembic upgrade head``
+(singular), which refuses to run at all with a fork. Nothing conflicted in git,
+so the PR read as mergeable while deploy-time migrations would have failed.
 """
 
 from __future__ import annotations
@@ -52,7 +58,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 
 revision: str = "h2i3j4k5l6m7"
-down_revision: Union[str, Sequence[str], None] = "g1h2i3j4k5l6"
+down_revision: Union[str, Sequence[str], None] = "c8e4f1a9d7b3"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
