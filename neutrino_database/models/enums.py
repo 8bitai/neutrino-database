@@ -192,6 +192,12 @@ class ServiceType(str, Enum):
     AZURE_OPENAI = "azure_openai"
     LANDINGAI = "landingai"
     BEDROCK = "bedrock"
+    # NC-526 — OpenRouter is an OpenAI-compatible aggregator, but it gets its
+    # own service type rather than riding "openai": its model ids are
+    # namespaced ("vendor/model"), its catalog is fetched at runtime, and it
+    # needs per-model reasoning-budget control that the OpenAI preset has no
+    # field for.
+    OPENROUTER = "openrouter"
 
 
 class ProviderCategory(str, Enum):
