@@ -2963,6 +2963,10 @@ dashboard = Table(
         ForeignKey("user.id", ondelete="SET NULL"),
         nullable=True,
     ),
+    # Pinned to the top of the sidebar's dashboard list. Mirrors chat.pinned so
+    # both rails sort by the same rule; a user preference about their workspace,
+    # which is why it is a column and not localStorage.
+    Column("pinned", Boolean, nullable=False, server_default=text("false")),
     Column("published_at", TIMESTAMP(timezone=True), nullable=True),
     Column(
         "created_at",
@@ -3024,7 +3028,12 @@ dashboard_widget = Table(
     ),
     Column("title", String(255), nullable=False),
     Column("description", Text, nullable=True),
-    # data_binding: { connection_id, schema_name, sql, params? }
+    # data_binding: relational { connection_id, schema_name, sql, params? }
+    #            or document   { connection_id, database, collection, pipeline }
+    #   A widget re-executes its query on every load. Restricting that query to
+    #   SQL made dashboards a relational-only surface: a chart over a Mongo
+    #   collection could be produced in chat but never kept. Both forms are
+    #   validated by DashboardWidgetDataBinding, which enforces exactly one.
     # viz_spec: { chart_type, x_axis, y_axis, series?, format?, ... }
     # grounding_metadata: { tables[], columns[], curator, last_validated_at }
     # All JSONB so we can partial-update specific keys without
@@ -3035,6 +3044,19 @@ dashboard_widget = Table(
     # The build-chat message that proposed this widget. SET NULL on
     # message purge (compliance) — the widget itself is the ground
     # truth; chat history is the audit trail.
+    # Which chat chart this widget was promoted from (pin-to-dashboard).
+    #   Not derivable from created_by_message_id: native da_chart artifacts are
+    #   persisted before the assistant message is finalized, so
+    #   chat_artifact.message_id is NULL by design — and a message can hold
+    #   several charts, so a message id cannot say WHICH one this came from.
+    #   SET NULL on delete, like created_by_message_id: the widget outlives its
+    #   provenance because the query it runs is its own.
+    Column(
+        "source_artifact_id",
+        UUID(as_uuid=False),
+        ForeignKey("chat_artifact.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     Column(
         "created_by_message_id",
         UUID(as_uuid=False),
@@ -3057,6 +3079,14 @@ dashboard_widget = Table(
 
     # Canonical render-time query — every dashboard load hits this.
     Index("ix_dashboard_widget_dashboard", "dashboard_id"),
+    # Reverse lookup: "which dashboards hold this chat chart?" — asked by the
+    # chat card on render, so it needs to be an index and not a scan. Partial,
+    # since the column is NULL for every build-agent-proposed widget.
+    Index(
+        "ix_dashboard_widget_source_artifact",
+        "source_artifact_id",
+        postgresql_where=text("source_artifact_id IS NOT NULL"),
+    ),
 )
 
 
