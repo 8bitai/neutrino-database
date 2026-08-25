@@ -892,8 +892,7 @@ class DocAclService:
             docs: List of dicts with 'doc_id' and 'user_id' (list of user IDs to revoke)
 
         Returns:
-            Total tuples deleted, 0 when deletes failed (fail closed),
-            -1 on store/transport error, -2 on validation error
+            Total tuples deleted, or -1 on error, -2 on validation error
         """
         if not docs:
             self.logger.warning("[bulk_revoke_access] Validation failed: docs cannot be empty")
@@ -947,7 +946,7 @@ class DocAclService:
                         failed_count,
                         workspace_id,
                     )
-                    return 0
+                    return -1
 
                 self.logger.info(
                     f"Bulk revoked {deleted_count} permissions across {len(docs)} documents "

@@ -47,8 +47,8 @@ async def test_revoke_methods_fail_closed(monkeypatch, method):
     svc = _service(monkeypatch, _FailingClient(RuntimeError("connection reset")))
     fn = getattr(svc, method)
     if method == "bulk_revoke_access":
-        result = await fn("ws1", [{"doc_id": "d1", "user_id": "u1"}])
-        assert result == 0
+        result = await fn("ws1", [{"doc_id": "d1", "user_id": ["u1"]}])
+        assert result == -1
     else:
         arg = ("ws1", "d1", "u1") if method == "revoke_access" else ("ws1", "d1")
         assert await fn(*arg) is False
