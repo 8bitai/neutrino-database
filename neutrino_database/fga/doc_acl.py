@@ -446,11 +446,13 @@ class DocAclService:
                 deleted_count += 1
             except Exception as e:
                 # Check if it's a not-found error
+                obj = getattr(t, "object", t)
+                user = getattr(t, "user", "?")
                 if "cannot delete" in str(e).lower() or "does not exist" in str(e).lower():
                     not_found_count += 1
-                    self.logger.debug(f"Tuple not found: {t.object} -> {t.user}")
+                    self.logger.debug(f"Tuple not found: {obj} -> {user}")
                 else:
-                    self.logger.warning(f"Failed to delete tuple {t.object} -> {t.user}: {e}")
+                    self.logger.warning(f"Failed to delete tuple {obj} -> {user}: {e}")
                     failed_count += 1
 
         return deleted_count, not_found_count, failed_count
@@ -890,7 +892,8 @@ class DocAclService:
             docs: List of dicts with 'doc_id' and 'user_id' (list of user IDs to revoke)
 
         Returns:
-            Total tuples deleted, or -1 on error, -2 on validation error
+            Total tuples deleted, 0 when deletes failed (fail closed),
+            -1 on store/transport error, -2 on validation error
         """
         if not docs:
             self.logger.warning("[bulk_revoke_access] Validation failed: docs cannot be empty")
@@ -939,10 +942,12 @@ class DocAclService:
 
                 if failed_count > 0:
                     self.logger.error(
-                        f"[bulk_revoke_access] {failed_count} tuple deletes failed "
-                        f"in workspace {workspace_id}"
+                        "[bulk_revoke_access] %d tuple deletes FAILED in workspace %s; "
+                        "reporting failure rather than success",
+                        failed_count,
+                        workspace_id,
                     )
-                    return -1
+                    return 0
 
                 self.logger.info(
                     f"Bulk revoked {deleted_count} permissions across {len(docs)} documents "
