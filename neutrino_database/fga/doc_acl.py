@@ -847,6 +847,36 @@ class DocAclService:
             self.logger.error(f"Failed to list user docs: {e}")
             return []
 
+    async def list_user_groups(self, workspace_id: str, user_id: str) -> list[str]:
+        """Group ids this user belongs to in the workspace's store.
+
+        The writer denormalizes group viewers onto every chunk as
+        ``group:{id}#member``. Without the matching strings in the caller's
+        principal set the terms filter cannot intersect them, so a document
+        shared only with a group stayed invisible even though OpenFGA granted
+        it. Pages like list_user_docs, for the same reason.
+        """
+        try:
+            store_info = await self._get_or_create_store(workspace_id)
+            if not store_info:
+                return []
+            store_id, model_id = store_info
+            client = self._get_fga_client(store_id, model_id)
+            async with client:
+                body = ClientListObjectsRequest(
+                    user=f"user:{user_id}", relation="member", type="group"
+                )
+                options = {"authorization_model_id": model_id}
+                out: list[str] = []
+                async for obj in client.streamed_list_objects(body, options):
+                    value = getattr(obj, "object", None) or str(obj)
+                    if value.startswith("group:"):
+                        out.append(value.split(":", 1)[1])
+                return out
+        except Exception as e:
+            self.logger.error(f"Failed to list user groups: {e}")
+            return []
+
     async def _list_doc_direct_users(
         self, workspace_id: str, doc_id: str
     ) -> tuple[bool, list[str]]:
