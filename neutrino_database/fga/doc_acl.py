@@ -6,8 +6,10 @@ Merged from the two ``openfga_service.py`` copies. Store names stay
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 from collections.abc import Iterable
 
 from openfga_sdk.client import ClientConfiguration, OpenFgaClient
@@ -20,7 +22,11 @@ from openfga_sdk.client.models import (
 from openfga_sdk.client.models.tuple import ClientTuple
 from openfga_sdk.models import CreateStoreRequest, ReadRequestTupleKey
 
+from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert
+
 from neutrino_database.fga import load_model, model_hash, SOURCE_MODEL_HASH
+from neutrino_database.models.tables import workspace_authz_store
 
 # Stores whose model this process has already confirmed at-head (NC-113-a).
 # The model is fixed per-process, so once verified we skip the read+hash on
@@ -36,6 +42,12 @@ _DOC_RELATIONS: tuple[str, ...] = ("can_access", "viewer")
 # OpenFGA's transactional Write API caps writes+deletes per call; batches
 # above this size must be chunked.
 _WRITE_BATCH_SIZE = 100
+
+# Claim-row poll: losers wait for the winner to fill store_id. Bounded so a
+# crashed winner cannot stall callers forever; the claim is released on
+# create failure so the next caller can retry.
+_STORE_CLAIM_TIMEOUT_SECONDS = 30.0
+_STORE_CLAIM_POLL_INTERVAL_SECONDS = 0.05
 
 
 def _chunks(iterable: Iterable, size: int) -> Iterable[list]:
@@ -220,37 +232,90 @@ class DocAclService:
                 return response.authorization_models[0].id
         return None
 
-    async def _get_or_create_store(self, workspace_id: str) -> tuple[str, str] | None:
-        """Get or create the OpenFGA store for a workspace.
+    async def _read_store_row(self, session, workspace_id: str):
+        result = await session.execute(
+            select(workspace_authz_store).where(
+                workspace_authz_store.c.workspace_id == workspace_id
+            )
+        )
+        return result.first()
 
-        Returns:
-            Tuple of (store_id, model_id) or None if failed
+    async def _await_store_row(self, workspace_id: str):
+        """Poll until the winner fills store_id, or give up.
+
+        Returns None on timeout and if the winner released the claim after a
+        failed create, so callers fail closed rather than waiting forever.
         """
-        store_name = self._get_store_name(workspace_id)
+        deadline = time.monotonic() + _STORE_CLAIM_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            async with self._session_factory() as session:
+                row = await self._read_store_row(session, workspace_id)
+            if row is None:
+                return None
+            if row.store_id:
+                return row.store_id, await self._heal_store_model_if_stale(
+                    row.store_id, row.model_id
+                )
+            await asyncio.sleep(_STORE_CLAIM_POLL_INTERVAL_SECONDS)
+        self.logger.warning(
+            f"Timed out waiting for OpenFGA store claim for workspace {workspace_id}"
+        )
+        return None
 
-        # Try to find existing store
-        store_id = await self._find_store_by_name(store_name)
+    async def _get_or_create_store(self, workspace_id: str):
+        """Resolve this workspace's store, creating it at most once.
 
-        if store_id:
-            # Store exists, get latest model
-            model_id = await self._get_latest_model_id(store_id)
-            if model_id:
-                # NC-113-a — lazy drift-heal: converge a store left on a stale
-                # model (runtime net complementing the deploy migrator).
-                model_id = await self._heal_store_model_if_stale(store_id, model_id)
-                return store_id, model_id
-            # Store exists but no model - create one
-            model_id = await self._create_authorization_model(store_id)
-            return store_id, model_id
+        The old shape looked the store up by NAME and created one on a miss,
+        with nothing serialising the two steps. OpenFGA does not enforce unique
+        store names, so eight concurrent cold-start callers produced eight
+        stores and the workspace split across them.
 
-        # Store doesn't exist - create store and model
-        store_id = await self._create_store(store_name)
-        if not store_id:
+        The claim row is taken BEFORE CreateStore, so exactly one caller ever
+        reaches the OpenFGA API. Losers poll the row the winner is filling in.
+        """
+        async with self._session_factory() as session:
+            row = await self._read_store_row(session, workspace_id)
+            if row and row.store_id:
+                return row.store_id, await self._heal_store_model_if_stale(
+                    row.store_id, row.model_id
+                )
+            # Claim: store_id NULL marks "creation in flight".
+            claimed = await session.execute(
+                insert(workspace_authz_store)
+                .values(workspace_id=workspace_id, store_id=None, model_id=None)
+                .on_conflict_do_nothing(index_elements=["workspace_id"])
+            )
+            await session.commit()
+            we_won = claimed.rowcount == 1
+
+        if not we_won:
+            return await self._await_store_row(workspace_id)
+
+        store_id = await self._create_store(self._get_store_name(workspace_id))
+        model_id = (
+            await self._create_authorization_model(store_id) if store_id else None
+        )
+        if not store_id or not model_id:
+            # Release the claim so the next caller can retry rather than
+            # waiting forever on a row that will never be filled.
+            async with self._session_factory() as session:
+                await session.execute(
+                    delete(workspace_authz_store).where(
+                        workspace_authz_store.c.workspace_id == workspace_id
+                    )
+                )
+                await session.commit()
+            if store_id:
+                await self._delete_store(store_id)
             return None
-        model_id = await self._create_authorization_model(store_id)
-        if not model_id:
-            return None
 
+        async with self._session_factory() as session:
+            await session.execute(
+                update(workspace_authz_store)
+                .where(workspace_authz_store.c.workspace_id == workspace_id)
+                .values(store_id=store_id, model_id=model_id)
+            )
+            await session.commit()
         return store_id, model_id
 
     async def _create_store(self, store_name: str) -> str | None:
@@ -264,6 +329,14 @@ class DocAclService:
         except Exception as e:
             self.logger.error(f"Failed to create store '{store_name}': {e}")
             return None
+
+    async def _delete_store(self, store_id: str) -> None:
+        """Delete a store created during a failed bootstrap. Best effort."""
+        try:
+            async with self._get_base_client(store_id) as client:
+                await client.delete_store()
+        except Exception as e:
+            self.logger.warning(f"Failed to clean up store {store_id}: {e}")
 
     async def _create_authorization_model(self, store_id: str) -> str | None:
         """Write the canonical authorization model (neutrino_database SSOT) to a

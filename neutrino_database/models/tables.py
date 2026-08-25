@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Table, Column, Integer, SmallInteger, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
+    Table, Column, Integer, SmallInteger, String, Text, TIMESTAMP, DateTime, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
     UniqueConstraint, Numeric, DDL, event, CheckConstraint
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, INET
@@ -465,6 +465,20 @@ tenant_authz_store = Table(
     Column("model_id", String(255), nullable=False),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+)
+
+workspace_authz_store = Table(
+    "workspace_authz_store",
+    metadata,
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("store_id", String(64), nullable=True),
+    Column("model_id", String(64), nullable=True),
+    Column("created_at", DateTime(timezone=True), server_default=func.now()),
 )
 
 tenant = Table(
