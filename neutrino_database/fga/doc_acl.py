@@ -835,11 +835,13 @@ class DocAclService:
                         type="doc",
                     )
                 options = {"authorization_model_id": model_id}
-                response = await client.list_objects(body, options)
-                doc_ids = []
-                for obj in response.objects:
-                    if obj.startswith("doc:"):
-                        doc_ids.append(obj.split(":", 1)[1])
+                # ListObjects caps at OPENFGA_LIST_OBJECTS_MAX_RESULTS (1000)
+                # with no continuation token. Stream instead.
+                doc_ids: list[str] = []
+                async for obj in client.streamed_list_objects(body, options):
+                    value = obj.object
+                    if value.startswith("doc:"):
+                        doc_ids.append(value.split(":", 1)[1])
                 return doc_ids
         except Exception as e:
             self.logger.error(f"Failed to list user docs: {e}")
