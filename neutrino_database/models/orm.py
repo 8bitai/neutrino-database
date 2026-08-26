@@ -444,7 +444,6 @@ class UserInvitation(Base):
     accepted_at: Mapped[Optional[datetime]]
     deleted_at: Mapped[Optional[datetime]]
     created_at: Mapped[datetime]
-    role_key: Mapped[Optional[str]]
 
     # Relationships
     tenant: Mapped["Tenant"] = relationship(
@@ -711,7 +710,6 @@ class WorkspaceInvitation(Base):
     accepted_at: Mapped[Optional[datetime]]
     deleted_at: Mapped[Optional[datetime]]
     created_at: Mapped[datetime]
-    role_key: Mapped[Optional[str]]
 
     # Relationships
     workspace: Mapped["Workspace"] = relationship(

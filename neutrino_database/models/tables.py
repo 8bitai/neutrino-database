@@ -701,7 +701,6 @@ user_invitation = Table(
     Column("accepted_at", TIMESTAMP(timezone=True), nullable=True),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
-    Column("role_key", String(64), nullable=True),
 
     Index("ix_user_invitation_tenant_email", "tenant_id", "email"),
     Index("ix_user_invitation_expires_at", "expires_at"),
@@ -1416,7 +1415,6 @@ workspace_invitation = Table(
     Column("accepted_at", TIMESTAMP(timezone=True), nullable=True),
     Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
-    Column("role_key", String(64), nullable=True),
 
     Index("ix_workspace_invitation_workspace_email", "workspace_id", "email"),
     Index("ix_workspace_invitation_email", "email"),
