@@ -9,8 +9,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
-from datetime import timedelta
 from collections.abc import Iterable
 
 from openfga_sdk.client import ClientConfiguration, OpenFgaClient
@@ -23,7 +21,7 @@ from openfga_sdk.client.models import (
 from openfga_sdk.client.models.tuple import ClientTuple
 from openfga_sdk.models import CreateStoreRequest, ReadRequestTupleKey
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
 from neutrino_database.fga import load_model, model_hash, SOURCE_MODEL_HASH
@@ -44,14 +42,19 @@ _DOC_RELATIONS: tuple[str, ...] = ("can_access", "viewer")
 # above this size must be chunked.
 _WRITE_BATCH_SIZE = 100
 
-# Claim-row poll: losers wait for the winner to fill store_id. Bounded so a
-# crashed winner cannot stall callers forever; the claim is released on
-# create failure so the next caller can retry.
-_STORE_CLAIM_TIMEOUT_SECONDS = 30.0
-_STORE_CLAIM_POLL_INTERVAL_SECONDS = 0.05
-# A claim older than this had its creator die mid-flight; take it over.
-# Comfortably longer than CreateStore + WriteAuthorizationModel.
-_STORE_CLAIM_STALE_SECONDS = 60.0
+# Both ends of the store bootstrap are bounded, because it holds a pooled
+# database connection across two OpenFGA HTTP calls.
+#
+# A caller that cannot get the workspace's lock within this gives up and
+# fails closed, and its caller retries on the next request. It does NOT keep
+# waiting: connector-service runs pool_size=5 + max_overflow=10, so waiters
+# that squat on a connection are what exhausts the pool. A healthy bootstrap
+# is two HTTP round trips, so this is generous by two orders of magnitude.
+_STORE_LOCK_WAIT_SECONDS = 10.0
+# The lock holder's own ceiling. The OpenFGA SDK defaults timeout_millisec to
+# 300_000, which would pin one connection and one workspace's permissions for
+# five minutes on a hung server.
+_STORE_BOOTSTRAP_TIMEOUT_SECONDS = 30.0
 
 
 def _chunks(iterable: Iterable, size: int) -> Iterable[list]:
@@ -139,7 +142,6 @@ class DocAclService:
         session_factory=None,
         api_url: str | None = None,
         api_token: str | None = None,
-        store_name_prefix: str | None = None,
         logger=None,
     ):
         """Document ACL client, shared by connector-service and ES-Ingestion.
@@ -158,11 +160,6 @@ class DocAclService:
             "OPENFGA_API_URL", "http://localhost:8080"
         )
         self.api_token = api_token or os.environ.get("OPENFGA_API_TOKEN") or None
-        self.store_name_prefix = (
-            store_name_prefix
-            or os.environ.get("OPENFGA_STORE_NAME_PREFIX")
-            or "neutrino-workspace"
-        )
         self.logger = logger or logging.getLogger(__name__)
 
     def _fga_credentials(self) -> Credentials | None:
@@ -206,73 +203,6 @@ class DocAclService:
         )
         return OpenFgaClient(config)
 
-    async def _find_store_by_name(self, store_name: str) -> str | None:
-        """Find a store by name, returns store_id if found.
-
-        Pages through list_stores via the continuation token — without
-        passing it back in, an env with more than one page of stores only
-        ever sees page 1, the store looks "missing", and
-        _get_or_create_store creates a DUPLICATE store with the same name.
-        """
-        async with self._get_base_client() as client:
-            continuation_token = None
-            while True:
-                options = (
-                    {"continuation_token": continuation_token}
-                    if continuation_token
-                    else None
-                )
-                response = await client.list_stores(options=options)
-                for store in response.stores:
-                    if store.name == store_name:
-                        return store.id
-
-                continuation_token = response.continuation_token
-                if not continuation_token:
-                    break
-        return None
-
-    async def _get_latest_model_id(self, store_id: str) -> str | None:
-        """Get the latest authorization model ID for a store."""
-        async with self._get_base_client(store_id) as client:
-            response = await client.read_authorization_models()
-            if response.authorization_models:
-                # Models are returned in reverse chronological order (latest first)
-                return response.authorization_models[0].id
-        return None
-
-    async def _take_over_stale_claim(self, session, workspace_id: str) -> bool:
-        """Claim a row whose winner died before filling in store_id.
-
-        A process killed between the claim insert and the fill update leaves
-        ``store_id IS NULL`` forever: every later caller loses the insert, polls
-        ``_await_store_row`` to timeout and returns None, so the workspace's
-        document permissions stay dead until someone runs SQL by hand. The
-        window is widest during a deploy, which is exactly when processes
-        restart.
-
-        The UPDATE is the lock. Only one caller can match a given
-        ``created_at``, because the winner refreshes it in the same statement.
-        """
-        taken = await session.execute(
-            update(workspace_authz_store)
-            .where(
-                workspace_authz_store.c.workspace_id == workspace_id,
-                workspace_authz_store.c.store_id.is_(None),
-                workspace_authz_store.c.created_at
-                < func.now() - timedelta(seconds=_STORE_CLAIM_STALE_SECONDS),
-            )
-            .values(created_at=func.now())
-        )
-        await session.commit()
-        if taken.rowcount == 1:
-            self.logger.warning(
-                f"Took over a stale OpenFGA store claim for workspace "
-                f"{workspace_id}; the previous creator did not finish"
-            )
-            return True
-        return False
-
     async def _read_store_row(self, session, workspace_id: str):
         result = await session.execute(
             select(workspace_authz_store).where(
@@ -281,85 +211,127 @@ class DocAclService:
         )
         return result.first()
 
-    async def _await_store_row(self, workspace_id: str):
-        """Poll until the winner fills store_id, or give up.
+    async def _lock_workspace(self, session, workspace_id: str) -> None:
+        """Serialise this workspace's store bootstrap across every process.
 
-        Returns None on timeout and if the winner released the claim after a
-        failed create, so callers fail closed rather than waiting forever.
+        Postgres drops an advisory transaction lock when the transaction ends
+        AND when the holding connection dies. That is the signal the previous
+        ``created_at``-age heuristic was approximating, and it gets it right in
+        both directions: a creator that died cannot keep the lock, and a
+        creator that is still alive cannot lose it. The heuristic could do
+        neither, so a 60-second-old live creator had its claim taken and the
+        workspace ended up with the second store this code exists to prevent.
+
+        ``pg_advisory_xact_lock``, not the session-scoped
+        ``pg_advisory_lock``: a transaction lock is released by COMMIT or
+        ROLLBACK, so it stays correct behind a pgbouncer in transaction-pooling
+        mode, where a session lock would be handed to an unrelated client.
+
+        ``hashtext`` returns int4, so two different workspace ids can hash to
+        the same lock key and serialise against each other. Harmless: the
+        loser waits out one bootstrap it did not need, then its double-checked
+        read finds nothing and it creates its own store.
         """
-        deadline = time.monotonic() + _STORE_CLAIM_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            async with self._session_factory() as session:
-                row = await self._read_store_row(session, workspace_id)
-            if row is None:
-                return None
-            if row.store_id:
-                return row.store_id, await self._heal_store_model_if_stale(
-                    row.store_id, row.model_id
-                )
-            await asyncio.sleep(_STORE_CLAIM_POLL_INTERVAL_SECONDS)
-        self.logger.warning(
-            f"Timed out waiting for OpenFGA store claim for workspace {workspace_id}"
+        await session.execute(
+            text(f"SET LOCAL lock_timeout = '{int(_STORE_LOCK_WAIT_SECONDS * 1000)}ms'")
         )
-        return None
+        await session.execute(
+            select(func.pg_advisory_xact_lock(func.hashtext(workspace_id)))
+        )
 
     async def _get_or_create_store(self, workspace_id: str):
         """Resolve this workspace's store, creating it at most once.
 
-        The old shape looked the store up by NAME and created one on a miss,
-        with nothing serialising the two steps. OpenFGA does not enforce unique
-        store names, so eight concurrent cold-start callers produced eight
-        stores and the workspace split across them.
+        The original shape looked the store up by NAME and created one on a
+        miss, with nothing serialising the two steps. OpenFGA does not enforce
+        unique store names, so eight concurrent cold-start callers produced
+        eight stores and the workspace split across them.
 
-        The claim row is taken BEFORE CreateStore, so exactly one caller ever
-        reaches the OpenFGA API. Losers poll the row the winner is filling in.
+        The read, the CreateStore call and the registry write all happen under
+        one advisory lock on the workspace, so exactly one caller ever reaches
+        the OpenFGA API and every other caller reads the row it wrote.
+
+        ponytail: the lock is held across two OpenFGA HTTP calls, so a
+        workspace's first-ever ACL call occupies a pooled connection for as
+        long as OpenFGA takes to answer. Bounded at both ends
+        (``_STORE_LOCK_WAIT_SECONDS``, ``_STORE_BOOTSTRAP_TIMEOUT_SECONDS``)
+        and paid once per workspace for the lifetime of the workspace. If it
+        ever costs more than that, move the bootstrap out of the request path
+        into workspace creation and let this function become a plain read.
         """
+        # Fast path, and the common one: the store is already registered, so
+        # no lock and no second round trip.
         async with self._session_factory() as session:
             row = await self._read_store_row(session, workspace_id)
-            if row and row.store_id:
-                return row.store_id, await self._heal_store_model_if_stale(
-                    row.store_id, row.model_id
-                )
-            # Claim: store_id NULL marks "creation in flight".
-            claimed = await session.execute(
-                insert(workspace_authz_store)
-                .values(workspace_id=workspace_id, store_id=None, model_id=None)
-                .on_conflict_do_nothing(index_elements=["workspace_id"])
+        if row and row.store_id:
+            return row.store_id, await self._heal_store_model_if_stale(
+                row.store_id, row.model_id
             )
-            await session.commit()
-            we_won = claimed.rowcount == 1
-            if not we_won:
-                we_won = await self._take_over_stale_claim(session, workspace_id)
 
-        if not we_won:
-            return await self._await_store_row(workspace_id)
+        async with self._session_factory() as session:
+            try:
+                await self._lock_workspace(session, workspace_id)
+            except Exception as e:
+                # lock_timeout fired, or the database is unreachable. Fail
+                # closed; the caller retries on its next request.
+                self.logger.warning(
+                    f"Could not take the store-bootstrap lock for workspace "
+                    f"{workspace_id}: {e}"
+                )
+                return None
 
-        store_id = await self._create_store(self._get_store_name(workspace_id))
-        model_id = (
-            await self._create_authorization_model(store_id) if store_id else None
-        )
-        if not store_id or not model_id:
-            # Release the claim so the next caller can retry rather than
-            # waiting forever on a row that will never be filled.
-            async with self._session_factory() as session:
+            # Double-checked read: whoever held the lock ahead of us may have
+            # created the store already. READ COMMITTED, so this statement
+            # sees their commit.
+            row = await self._read_store_row(session, workspace_id)
+            if row and row.store_id:
+                store_id, model_id = row.store_id, row.model_id
+            else:
+                store_id = model_id = None
+                try:
+                    async with asyncio.timeout(_STORE_BOOTSTRAP_TIMEOUT_SECONDS):
+                        store_id = await self._create_store(
+                            self._get_store_name(workspace_id)
+                        )
+                        if store_id:
+                            model_id = await self._create_authorization_model(store_id)
+                except TimeoutError:
+                    self.logger.error(
+                        f"OpenFGA store bootstrap for workspace {workspace_id} "
+                        f"timed out after {_STORE_BOOTSTRAP_TIMEOUT_SECONDS}s"
+                    )
+
+                if not store_id or not model_id:
+                    # Roll back to drop the lock now rather than whenever the
+                    # session happens to close, so the next caller can retry.
+                    await session.rollback()
+                    if store_id:
+                        await self._delete_store(store_id)
+                    return None
+
+                # ON CONFLICT DO UPDATE, not a plain insert: a workspace
+                # bootstrapped under the previous claim-row protocol can
+                # already have a row with store_id NULL, which has to be
+                # filled rather than collided with. A row with a real store_id
+                # cannot reach here — the double-checked read returned it.
                 await session.execute(
-                    delete(workspace_authz_store).where(
-                        workspace_authz_store.c.workspace_id == workspace_id
+                    insert(workspace_authz_store)
+                    .values(
+                        workspace_id=workspace_id,
+                        store_id=store_id,
+                        model_id=model_id,
+                    )
+                    .on_conflict_do_update(
+                        index_elements=["workspace_id"],
+                        set_={"store_id": store_id, "model_id": model_id},
                     )
                 )
                 await session.commit()
-            if store_id:
-                await self._delete_store(store_id)
-            return None
 
-        async with self._session_factory() as session:
-            await session.execute(
-                update(workspace_authz_store)
-                .where(workspace_authz_store.c.workspace_id == workspace_id)
-                .values(store_id=store_id, model_id=model_id)
-            )
-            await session.commit()
-        return store_id, model_id
+        # Outside the session on purpose. The heal opens a session of its own,
+        # and taking a second pooled connection while other callers sit queued
+        # on this workspace's lock holding theirs is how the pool starves.
+        return store_id, await self._heal_store_model_if_stale(store_id, model_id)
 
     async def _create_store(self, store_name: str) -> str | None:
         """Create an OpenFGA store."""
@@ -425,6 +397,23 @@ class DocAclService:
                 return model_id
             new_model_id = await self._create_authorization_model(store_id)
             if new_model_id:
+                # Persist it, or the next process start reads the stale id
+                # back out of the registry, sees the deployed model already
+                # canonical, short-circuits, and pins every client to a
+                # model with no ``viewer`` relation.
+                try:
+                    async with self._session_factory() as session:
+                        await session.execute(
+                            update(workspace_authz_store)
+                            .where(workspace_authz_store.c.store_id == store_id)
+                            .values(model_id=new_model_id)
+                        )
+                        await session.commit()
+                except Exception as e:
+                    self.logger.warning(
+                        f"[fga-heal] wrote model {new_model_id} for store "
+                        f"{store_id} but failed to persist it: {e}"
+                    )
                 self.logger.info(
                     f"[fga-heal] store {store_id} was on a stale model; "
                     f"wrote canonical model {new_model_id}"
@@ -435,46 +424,6 @@ class DocAclService:
         except Exception as e:
             self.logger.warning(f"[fga-heal] drift check failed for store {store_id}: {e}")
             return model_id
-
-    async def migrate_store_model(self, workspace_id: str) -> bool:
-        """Create a new authorization model version for an existing store.
-
-        This is needed when the model schema changes (e.g., adding wildcard support).
-        The new model will be used for all subsequent operations.
-
-        Args:
-            workspace_id: Workspace ID whose store should be migrated
-
-        Returns:
-            True if migration succeeded, False otherwise
-        """
-        try:
-            store_name = self._get_store_name(workspace_id)
-            store_id = await self._find_store_by_name(store_name)
-
-            if not store_id:
-                self.logger.warning(f"[migrate_store_model] No store found for workspace {workspace_id}")
-                return False
-
-            # Create a new model version from the canonical neutrino_database model
-            new_model_id = await self._create_authorization_model(store_id)
-            if not new_model_id:
-                self.logger.error(
-                    f"[migrate_store_model] Failed to create new model for workspace {workspace_id}"
-                )
-                return False
-
-            self.logger.info(
-                f"[migrate_store_model] Successfully migrated store for workspace {workspace_id} "
-                f"to new model {new_model_id}"
-            )
-            return True
-
-        except Exception as e:
-            self.logger.error(
-                f"[migrate_store_model] Failed to migrate store for workspace {workspace_id}: {e}"
-            )
-            return False
 
     def _validate_ids(
         self, doc_ids: list[str] = None, user_ids: list[str] = None
@@ -754,13 +703,19 @@ class DocAclService:
             store_id, model_id = store_info
             client = self._get_fga_client(store_id, model_id)
             async with client:
-                tuple_key = ClientTuple(
-                    user=f"user:{user_id}",
-                    relation="can_access",
-                    object=f"doc:{doc_id}",
-                )
+                # Sweep every relation that can carry the grant: the
+                # canonical writer puts it on ``viewer``, so deleting only
+                # ``can_access`` revoked nothing and still returned True.
+                tuple_keys = [
+                    ClientTuple(
+                        user=f"user:{user_id}",
+                        relation=relation,
+                        object=f"doc:{doc_id}",
+                    )
+                    for relation in _DOC_RELATIONS
+                ]
                 deleted_count, not_found_count, failed_count = await self._delete_tuples(
-                    client, [tuple_key], model_id
+                    client, tuple_keys, model_id
                 )
 
                 if failed_count > 0:
@@ -851,53 +806,19 @@ class DocAclService:
                 workspace_id, member_id, e,
             )
 
-    async def list_user_docs(self, workspace_id: str, user_id: str) -> list[str]:
-        """List all documents a user can access."""
-        try:
-            store_info = await self._get_or_create_store(workspace_id)
-            if not store_info:
-                return []
+    async def _list_objects(
+        self,
+        workspace_id: str,
+        user: str,
+        relation: str,
+        obj_type: str,
+        ensure_member: str | None = None,
+    ) -> list[str]:
+        """Stream the object ids of ``obj_type`` this user holds ``relation`` on.
 
-            store_id, model_id = store_info
-            client = self._get_fga_client(store_id, model_id)
-            async with client:
-                if user_id is None:
-                    body = ClientListObjectsRequest(
-                        user="user:*",
-                        relation="can_access",
-                        type="doc",
-                    )
-
-                else:
-                    await self._ensure_workspace_membership(
-                        client, workspace_id, user_id
-                    )
-                    body = ClientListObjectsRequest(
-                        user=f"user:{user_id}",
-                        relation="can_access",
-                        type="doc",
-                    )
-                options = {"authorization_model_id": model_id}
-                # ListObjects caps at OPENFGA_LIST_OBJECTS_MAX_RESULTS (1000)
-                # with no continuation token. Stream instead.
-                doc_ids: list[str] = []
-                async for obj in client.streamed_list_objects(body, options):
-                    value = obj.object
-                    if value.startswith("doc:"):
-                        doc_ids.append(value.split(":", 1)[1])
-                return doc_ids
-        except Exception as e:
-            self.logger.error(f"Failed to list user docs: {e}")
-            return []
-
-    async def list_user_groups(self, workspace_id: str, user_id: str) -> list[str]:
-        """Group ids this user belongs to in the workspace's store.
-
-        The writer denormalizes group viewers onto every chunk as
-        ``group:{id}#member``. Without the matching strings in the caller's
-        principal set the terms filter cannot intersect them, so a document
-        shared only with a group stayed invisible even though OpenFGA granted
-        it. Pages like list_user_docs, for the same reason.
+        ListObjects caps at OPENFGA_LIST_OBJECTS_MAX_RESULTS (1000) with no
+        continuation token, so this streams instead. ``ensure_member`` writes
+        the workspace membership tuple first, which the doc listing needs.
         """
         try:
             store_info = await self._get_or_create_store(workspace_id)
@@ -906,19 +827,47 @@ class DocAclService:
             store_id, model_id = store_info
             client = self._get_fga_client(store_id, model_id)
             async with client:
+                if ensure_member is not None:
+                    await self._ensure_workspace_membership(
+                        client, workspace_id, ensure_member
+                    )
                 body = ClientListObjectsRequest(
-                    user=f"user:{user_id}", relation="member", type="group"
+                    user=user, relation=relation, type=obj_type
                 )
                 options = {"authorization_model_id": model_id}
+                prefix = f"{obj_type}:"
                 out: list[str] = []
                 async for obj in client.streamed_list_objects(body, options):
                     value = getattr(obj, "object", None) or str(obj)
-                    if value.startswith("group:"):
+                    if value.startswith(prefix):
                         out.append(value.split(":", 1)[1])
                 return out
         except Exception as e:
-            self.logger.error(f"Failed to list user groups: {e}")
+            self.logger.error(f"Failed to list {obj_type} for {user}: {e}")
             return []
+
+    async def list_user_docs(self, workspace_id: str, user_id: str) -> list[str]:
+        """List all documents a user can access."""
+        return await self._list_objects(
+            workspace_id,
+            "user:*" if user_id is None else f"user:{user_id}",
+            "can_access",
+            "doc",
+            ensure_member=None if user_id is None else user_id,
+        )
+
+    async def list_user_groups(self, workspace_id: str, user_id: str) -> list[str]:
+        """Group ids this user belongs to in the workspace's store.
+
+        The writer denormalizes group viewers onto every chunk as
+        ``group:{id}#member``. Without the matching strings in the caller's
+        principal set the terms filter cannot intersect them, so a document
+        shared only with a group stayed invisible even though OpenFGA granted
+        it.
+        """
+        return await self._list_objects(
+            workspace_id, f"user:{user_id}", "member", "group"
+        )
 
     async def _list_doc_direct_users(
         self, workspace_id: str, doc_id: str
@@ -942,31 +891,39 @@ class DocAclService:
 
             store_id, model_id = store_info
             async with self._get_base_client(store_id) as client:
-                body = ReadRequestTupleKey(
-                    object=f"doc:{doc_id}",
-                    relation="can_access",
-                )
-
-                direct_user_ids = []
+                direct_user_ids: list[str] = []
+                seen: set[str] = set()
                 is_public = False
-                continuation_token = None
 
-                while True:
-                    options = (
-                        {"continuation_token": continuation_token} if continuation_token else None
+                # Both relations, or canonically granted (``viewer``) users
+                # never show up and sync_doc_permissions never reconciles
+                # them away.
+                for relation in _DOC_RELATIONS:
+                    body = ReadRequestTupleKey(
+                        object=f"doc:{doc_id}",
+                        relation=relation,
                     )
-                    response = await client.read(body, options)
+                    continuation_token = None
 
-                    for t in response.tuples:
-                        user = t.key.user
-                        if user == "user:*":
-                            is_public = True
-                        elif user.startswith("user:"):
-                            direct_user_ids.append(user.split(":", 1)[1])
+                    while True:
+                        options = (
+                            {"continuation_token": continuation_token} if continuation_token else None
+                        )
+                        response = await client.read(body, options)
 
-                    continuation_token = response.continuation_token
-                    if not continuation_token:
-                        break
+                        for t in response.tuples:
+                            user = t.key.user
+                            if user == "user:*":
+                                is_public = True
+                            elif user.startswith("user:"):
+                                uid = user.split(":", 1)[1]
+                                if uid not in seen:
+                                    seen.add(uid)
+                                    direct_user_ids.append(uid)
+
+                        continuation_token = response.continuation_token
+                        if not continuation_token:
+                            break
 
                 return is_public, direct_user_ids
 
