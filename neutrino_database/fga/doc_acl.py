@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import time
+from datetime import timedelta
 from collections.abc import Iterable
 
 from openfga_sdk.client import ClientConfiguration, OpenFgaClient
@@ -22,7 +23,7 @@ from openfga_sdk.client.models import (
 from openfga_sdk.client.models.tuple import ClientTuple
 from openfga_sdk.models import CreateStoreRequest, ReadRequestTupleKey
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from neutrino_database.fga import load_model, model_hash, SOURCE_MODEL_HASH
@@ -48,6 +49,9 @@ _WRITE_BATCH_SIZE = 100
 # create failure so the next caller can retry.
 _STORE_CLAIM_TIMEOUT_SECONDS = 30.0
 _STORE_CLAIM_POLL_INTERVAL_SECONDS = 0.05
+# A claim older than this had its creator die mid-flight; take it over.
+# Comfortably longer than CreateStore + WriteAuthorizationModel.
+_STORE_CLAIM_STALE_SECONDS = 60.0
 
 
 def _chunks(iterable: Iterable, size: int) -> Iterable[list]:
@@ -147,7 +151,12 @@ class DocAclService:
         stays optional for callers that never resolve a store.
         """
         self._session_factory = session_factory
-        self.api_url = api_url or os.environ["OPENFGA_API_URL"]
+        # Same default as migrate.py in this package. A hard os.environ[...]
+        # raised KeyError at construction, so a client could not be built at
+        # all without the var set, which broke six tests on a clean checkout.
+        self.api_url = api_url or os.environ.get(
+            "OPENFGA_API_URL", "http://localhost:8080"
+        )
         self.api_token = api_token or os.environ.get("OPENFGA_API_TOKEN") or None
         self.store_name_prefix = (
             store_name_prefix
@@ -232,6 +241,38 @@ class DocAclService:
                 return response.authorization_models[0].id
         return None
 
+    async def _take_over_stale_claim(self, session, workspace_id: str) -> bool:
+        """Claim a row whose winner died before filling in store_id.
+
+        A process killed between the claim insert and the fill update leaves
+        ``store_id IS NULL`` forever: every later caller loses the insert, polls
+        ``_await_store_row`` to timeout and returns None, so the workspace's
+        document permissions stay dead until someone runs SQL by hand. The
+        window is widest during a deploy, which is exactly when processes
+        restart.
+
+        The UPDATE is the lock. Only one caller can match a given
+        ``created_at``, because the winner refreshes it in the same statement.
+        """
+        taken = await session.execute(
+            update(workspace_authz_store)
+            .where(
+                workspace_authz_store.c.workspace_id == workspace_id,
+                workspace_authz_store.c.store_id.is_(None),
+                workspace_authz_store.c.created_at
+                < func.now() - timedelta(seconds=_STORE_CLAIM_STALE_SECONDS),
+            )
+            .values(created_at=func.now())
+        )
+        await session.commit()
+        if taken.rowcount == 1:
+            self.logger.warning(
+                f"Took over a stale OpenFGA store claim for workspace "
+                f"{workspace_id}; the previous creator did not finish"
+            )
+            return True
+        return False
+
     async def _read_store_row(self, session, workspace_id: str):
         result = await session.execute(
             select(workspace_authz_store).where(
@@ -287,6 +328,8 @@ class DocAclService:
             )
             await session.commit()
             we_won = claimed.rowcount == 1
+            if not we_won:
+                we_won = await self._take_over_stale_claim(session, workspace_id)
 
         if not we_won:
             return await self._await_store_row(workspace_id)
