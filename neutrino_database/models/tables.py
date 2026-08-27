@@ -2231,6 +2231,144 @@ workspace_curation_da_column = Table(
 
 
 # ---------------------------------------------------------------------------
+# workspace_da_suggested_question — the stored pool of chat starter questions
+# for one workspace (NC-570).
+#
+# Until this table existed, the chat empty state composed its DA cards from
+# three string templates on the request path. The result was honest after
+# NC-567, because nothing reached a sentence without a business name and a
+# statistical profile behind it, but it was still assembled prose. A senior,
+# non technical reader does not recognise "Break down Net revenue by Sales
+# region in Sales orders" as a question they asked. Generation therefore moves
+# into the enrichment run, where a language model writes the sentence against
+# the same evidence, and the result is stored here.
+#
+# One row is one question. The row carries the catalog identity the serve
+# boundary needs, so nothing has to be recovered from the finished sentence:
+#
+#   * da_catalog_table_id / da_catalog_schema_id — where the question comes
+#     from. The permission filter walks column -> table -> schema, so it needs
+#     the schema as well as the table.
+#   * da_catalog_column_ids — every column the sentence names. This is what
+#     makes the NC-568 filter possible: a member denied one column must not
+#     read its business name off a suggested question. NOT NULL, because a
+#     question that records no column cannot be proved safe and the filter
+#     fails closed on an empty list.
+#
+# ``shape`` is load bearing and not decoration. It is the question's kind — a
+# trend, a breakdown, a total, a ranking — and it carries the icon the client
+# renders. The serve boundary groups the pool by shape and draws round the
+# groups in turn, so four cards on one screen are four different kinds of
+# question rather than one sentence repeated four times. Storing the icon
+# alone would work today and lose the grouping the moment two shapes shared an
+# icon, so the kind is stored and the icon is derived from it.
+#
+# ``origin`` matches the ``description_origin`` house style on the
+# workspace_curation_da_* overlays: a short string with a check constraint
+# rather than a native enum, so adding a value later is a constraint change
+# and not a type migration. 'ai' is what the enrichment run writes; 'template'
+# records a row put here by the deterministic composer, which keeps the door
+# open for a workspace that will never run a model.
+#
+# Every foreign key cascades. A removed connection, schema or table takes its
+# questions with it, because a question about a table that no longer exists is
+# exactly the "names something that isn't there" failure this whole feature
+# was written to remove. ``generated_by_run_id`` is the one exception: it is
+# provenance, so a deleted enrichment run leaves the questions in place with a
+# NULL run.
+# ---------------------------------------------------------------------------
+
+workspace_da_suggested_question = Table(
+    "workspace_da_suggested_question",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # The DA connection is an ``integration`` row, and the column keeps the DA
+    # domain name the rest of the catalog uses (see da_catalog_schema).
+    Column(
+        "da_connection_id",
+        UUID(as_uuid=False),
+        ForeignKey("integration.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "da_catalog_schema_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_catalog_schema.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "da_catalog_table_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_catalog_table.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # JSONB list[str] of da_catalog_column.id. A list and not a join table:
+    # the value is read whole, never queried by element, and it is rewritten
+    # with its question rather than edited.
+    Column("da_catalog_column_ids", JSONB, nullable=False),
+
+    Column("question_text", Text, nullable=False),
+    Column("shape", String(32), nullable=False),
+    Column(
+        "origin",
+        String(8),
+        nullable=False,
+        server_default=text("'ai'"),
+    ),
+
+    # Provenance. SET NULL so pruning old runs never deletes the pool.
+    Column(
+        "generated_by_run_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_enrichment_run.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "generated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    CheckConstraint(
+        "origin IN ('template', 'ai')",
+        name="ck_wdsq_origin",
+    ),
+    # The serve path's only lookup: this workspace's pool, narrowed to the
+    # connections it may currently query.
+    Index("ix_wdsq_workspace_connection", "workspace_id", "da_connection_id"),
+    # The write path's lookup: delete then insert per table.
+    Index("ix_wdsq_table", "da_catalog_table_id"),
+)
+
+
+# ---------------------------------------------------------------------------
 # workspace_da_settings — workspace-level DA settings (DA-P1l.1.0).
 #
 # Holds workspace-level toggles that govern AI description generation

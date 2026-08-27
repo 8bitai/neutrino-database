@@ -1149,6 +1149,43 @@ class WorkspaceCurationDAColumn(Base):
     updated_at: Mapped[datetime]
 
 
+class WorkspaceDASuggestedQuestion(Base):
+    """One stored chat starter question for a workspace (NC-570).
+
+    Written by the enrichment run and read by the chat empty state. The row
+    carries the finished sentence plus the catalog identity behind it, so the
+    serve boundary never has to recover a question's provenance by reading
+    names back out of the prose.
+
+    ``shape`` is the question's kind — trend, breakdown, total, ranking — and
+    it is load bearing rather than decoration. It carries the icon the client
+    renders, AND the serve boundary groups the pool by it so one screen shows
+    four kinds of question instead of one sentence four times.
+
+    ``da_catalog_column_ids`` is the NC-568 contract: every column the
+    sentence names, so a member denied a column never reads its business name
+    off a card. It is NOT NULL because the filter fails closed, and a question
+    that records no column can never be proved safe.
+    """
+
+    __table__ = tables.workspace_da_suggested_question
+
+    id: Mapped[str]
+    workspace_id: Mapped[str]
+    tenant_id: Mapped[str]
+    da_connection_id: Mapped[str]
+    da_catalog_schema_id: Mapped[str]
+    da_catalog_table_id: Mapped[str]
+    da_catalog_column_ids: Mapped[list]
+    question_text: Mapped[str]
+    shape: Mapped[str]
+    origin: Mapped[str]
+    generated_by_run_id: Mapped[Optional[str]]
+    generated_at: Mapped[datetime]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
 class WorkspaceDASettings(Base):
     """Workspace-level Data Analytics settings (DA-P1l.1.0).
 
