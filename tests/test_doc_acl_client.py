@@ -14,7 +14,7 @@ def test_delete_tuples_reports_failures_separately():
     assert "failed_count" in src, "must keep connector-service's third counter"
 
 
-def test_canonical_viewer_helpers_survive_the_merge():
+def test_canonical_viewer_helpers_exist_after_the_merge():
     for name in (
         "replace_viewer_tuples",
         "replace_group_members",

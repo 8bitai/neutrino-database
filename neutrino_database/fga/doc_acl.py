@@ -380,19 +380,48 @@ class DocAclService:
                 return response.authorization_models[0].to_dict()
         return None
 
+    async def _persist_model_id(self, store_id: str, model_id: str) -> None:
+        """Point this store's registry row at ``model_id``; failure logs only."""
+        try:
+            async with self._session_factory() as session:
+                await session.execute(
+                    update(workspace_authz_store)
+                    .where(workspace_authz_store.c.store_id == store_id)
+                    .values(model_id=model_id)
+                )
+                await session.commit()
+        except Exception as e:
+            self.logger.warning(
+                f"[fga-heal] could not persist model {model_id} for store "
+                f"{store_id}: {e}"
+            )
+
     async def _heal_store_model_if_stale(self, store_id: str, model_id: str) -> str:
         """Converge a store onto the canonical model if its deployed model is
         stale (NC-113-a lazy drift-heal).
 
-        Returns the model id to use — the new one if a heal wrote it, else the
-        passed-in current id. Process-cached; fail-soft (a heal error logs and
-        falls back to the current id; the deploy migrator is the backstop).
+        Returns the model id to use — the new one if a heal wrote it, the
+        deployed one if the registry was merely behind it, else the passed-in
+        current id. Process-cached; fail-soft (a heal error logs and falls back
+        to the current id; the deploy migrator is the backstop).
         """
         if store_id in _HEALED_STORES:
             return model_id
         try:
             deployed = await self._get_latest_model(store_id)
             if deployed is not None and model_hash(deployed) == SOURCE_MODEL_HASH:
+                # ``make migrate-fga`` writes a new canonical model VERSION
+                # without touching the registry, so a canonical hash does not
+                # mean ``model_id`` is head. Catch the registry up, do not
+                # write another model.
+                deployed_id = deployed.get("id")
+                if deployed_id and deployed_id != model_id:
+                    await self._persist_model_id(store_id, deployed_id)
+                    self.logger.info(
+                        f"[fga-heal] store {store_id} registry named stale "
+                        f"model {model_id}; adopted deployed model {deployed_id}"
+                    )
+                    model_id = deployed_id
                 _HEALED_STORES.add(store_id)
                 return model_id
             new_model_id = await self._create_authorization_model(store_id)
@@ -401,19 +430,7 @@ class DocAclService:
                 # back out of the registry, sees the deployed model already
                 # canonical, short-circuits, and pins every client to a
                 # model with no ``viewer`` relation.
-                try:
-                    async with self._session_factory() as session:
-                        await session.execute(
-                            update(workspace_authz_store)
-                            .where(workspace_authz_store.c.store_id == store_id)
-                            .values(model_id=new_model_id)
-                        )
-                        await session.commit()
-                except Exception as e:
-                    self.logger.warning(
-                        f"[fga-heal] wrote model {new_model_id} for store "
-                        f"{store_id} but failed to persist it: {e}"
-                    )
+                await self._persist_model_id(store_id, new_model_id)
                 self.logger.info(
                     f"[fga-heal] store {store_id} was on a stale model; "
                     f"wrote canonical model {new_model_id}"
@@ -864,6 +881,9 @@ class DocAclService:
         principal set the terms filter cannot intersect them, so a document
         shared only with a group stayed invisible even though OpenFGA granted
         it.
+
+        Returns ``[]`` for every user today — nothing writes the membership
+        tuples it reads. See ``replace_group_members``.
         """
         return await self._list_objects(
             workspace_id, f"user:{user_id}", "member", "group"
@@ -1623,6 +1643,11 @@ class DocAclService:
 
         Returns ``{granted, revoked, unchanged, status, error}``; on store
         lookup failure returns ``status='error'`` rather than raising.
+
+        ponytail: no production caller, so ``group:<gid> member user:<uid>``
+        tuples are never written and group sharing is inert end to end. The
+        caller this wants is a connector syncing external group membership
+        (SharePoint, Jira).
         """
         result = {
             "granted": 0,

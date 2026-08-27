@@ -5,8 +5,8 @@ caches the store id in the process-local ``_HEALED_STORES`` set. If the new id
 never reaches ``workspace_authz_store.model_id``, the next process start reads
 the STALE id back out of the registry, asks OpenFGA for the deployed model,
 finds it already canonical (the previous process wrote it), short-circuits, and
-pins every client to a model with no ``viewer`` relation. Every canonical write
-(``replace_viewer_tuples``, ``replace_group_members``) then 400s.
+pins every client to a model with no ``viewer`` relation. Every canonical
+viewer write (``replace_viewer_tuples``) then 400s.
 
 So the assertion is about the second resolve, after the restart, not the first.
 """
@@ -157,3 +157,20 @@ async def test_heal_uses_process_cache(monkeypatch):
     assert await svc._heal_store_model_if_stale("store-cached", "m-old") == "m-old"
     read.assert_not_awaited()
     create.assert_not_awaited()
+
+
+async def test_registry_catches_up_to_a_migrator_written_model(monkeypatch, registry):
+    """``make migrate-fga`` writes a new canonical model version and leaves the
+    registry naming the old one; the hash still matches, so the heal must not
+    hand back the registry's id.
+    """
+    svc = _service(monkeypatch, registry)
+    deployed = dict(load_model(), id="migrator-model")
+    monkeypatch.setattr(svc, "_get_latest_model", AsyncMock(return_value=deployed))
+    creator = AsyncMock(return_value="a-third-model")
+    monkeypatch.setattr(svc, "_create_authorization_model", creator)
+
+    assert await svc._get_or_create_store("ws-1") == ("store-1", "migrator-model")
+    assert registry["model_id"] == "migrator-model"
+    # The store is already at head; adopting its id must not write a new model.
+    creator.assert_not_awaited()
