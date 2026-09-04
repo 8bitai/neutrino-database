@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Table, Column, Integer, SmallInteger, String, Text, TIMESTAMP, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
+    Table, Column, Integer, SmallInteger, String, Text, TIMESTAMP, DateTime, Index, Float, ForeignKey, BigInteger, Enum as PgEnum,
     UniqueConstraint, Numeric, DDL, event, CheckConstraint
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, INET
@@ -465,6 +465,20 @@ tenant_authz_store = Table(
     Column("model_id", String(255), nullable=False),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+)
+
+workspace_authz_store = Table(
+    "workspace_authz_store",
+    metadata,
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("store_id", String(64), nullable=True),
+    Column("model_id", String(64), nullable=True),
+    Column("created_at", DateTime(timezone=True), server_default=func.now()),
 )
 
 tenant = Table(
@@ -1054,6 +1068,220 @@ share_link = Table(
 )
 
 
+
+# ---------------------------------------------------------------------------
+# user_memory (NC-519) — long-term, per-user agent memory.
+#
+# NC-416's context window solves conversation LENGTH; it does nothing across
+# conversations, and its compaction actively discards the detail a memory layer
+# wants to keep. This table is the cross-chat half: durable facts, preferences
+# and corrections that survive the chat they were learned in.
+#
+# Postgres is the SOURCE OF TRUTH. A mirror doc lands in the per-tenant
+# Elasticsearch index ``memories_tenant_{tenant}`` purely for hybrid retrieval
+# (BM25 + kNN) and is rebuildable from these rows at any time — so an ES outage
+# degrades recall, never correctness.
+#
+# Scoping: keyed on ``user_id`` (the JWT's ``user_id``), NOT ``member.id``.
+# Document ACLs are member-keyed because the file-permission store keys by
+# member (NC-131), but memory is ours end-to-end and agent-platform already
+# holds user_id from the internal token — keying on it avoids a
+# connector-service round-trip on every turn.
+#
+# ``kind`` / ``origin`` / ``scope`` are String + CHECK rather than PgEnum, a
+# deliberate deviation from chat_artifact.kind: all three sets are expected to
+# GROW (procedural memories, workspace-shared scope), and extending a CHECK is
+# a one-line migration where ALTER TYPE ... ADD VALUE cannot be rolled back.
+# ---------------------------------------------------------------------------
+user_memory = Table(
+    "user_memory",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+    # NOT NULL and CASCADE: a memory has no meaning without its subject, and a
+    # deleted user's memories must not outlive them (GDPR erasure rides the FK).
+    Column("user_id", UUID(as_uuid=False), ForeignKey("user.id", ondelete="CASCADE"), nullable=False),
+    # NULLABLE, unlike chat.workspace_id (X-CHAT-WS-1). v1 always writes it set,
+    # so memory learned in one workspace does not leak into another. NULL is
+    # reserved for "follows the user across workspaces" — a product decision we
+    # have not taken yet, and the column shape must not force it either way.
+    Column("workspace_id", UUID(as_uuid=False), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=True),
+
+    # Who the memory is ABOUT. 'user' today; 'workspace'/'tenant' are reserved
+    # so team-shared memory needs no migration, only a read-path change.
+    Column("scope", String(16), nullable=False, server_default=text("'user'")),
+    # fact       — durable, reusable state ("owns the APAC region")
+    # preference — changes output shape ("wants the SQL shown")
+    # correction — a domain fix ("revenue means net of returns")
+    # Deliberately no 'episodic': "what happened in chat X" is what chat history
+    # and the artifact index already are, and duplicating it invites recall of
+    # stale narrative.
+    Column("kind", String(32), nullable=False),
+    Column("content", Text, nullable=False),
+    # sha256 of the normalized content. Lets the extractor short-circuit an
+    # exact repeat to NOOP without spending an LLM call on reconciliation, and
+    # backs the per-user uniqueness index below.
+    Column("content_hash", String(64), nullable=False),
+    Column("confidence", Float, nullable=False, server_default=text("0.5")),
+    # How many separate turns have asserted this. Reinforcement, not a guess:
+    # an extractor's confidence number is its own opinion, whereas being said
+    # twice is evidence. Drives promotion out of `candidate` (see `status`).
+    Column("observation_count", Integer, nullable=False, server_default=text("1")),
+    # candidate — extracted once, NOT injected yet. Held until a second
+    #             observation promotes it, which is the cheapest defence against
+    #             the overgeneralisation that makes consolidated memory decay
+    #             below a no-memory baseline (arXiv 2605.12978).
+    # active    — injected into turns.
+    # proposed  — recognised as ORG knowledge, not personal: it names something
+    #             in the DA catalog, so it was routed there as an
+    #             `ai_suggested` description for review instead of becoming one
+    #             analyst's private definition. Never injected.
+    Column("status", String(16), nullable=False, server_default=text("'active'")),
+    # auto     — background extraction
+    # explicit — the agent called save_memory ("remember that…")
+    # manual   — the user typed it into the Memory settings tab
+    Column("origin", String(16), nullable=False),
+
+    # The verbatim span this memory was derived from. Keeping it makes a memory
+    # a claim ABOUT evidence rather than a replacement for it: a wrong
+    # abstraction can be re-derived, and a consolidation pass can be diffed
+    # against the source instead of being trusted. Anthropic's Dreams keeps the
+    # input store for this reason; OpenAI's Dreaming V3 overwrites in place and
+    # gives up the ability to tell whether it is working.
+    Column("source_excerpt", Text, nullable=True),
+
+    # BI-TEMPORAL, kept separate from created_at on purpose:
+    #   created_at            — when WE learned it
+    #   valid_from / valid_to — when it was true in the world
+    # "Worked on APAC until March" needs both, and a store that only knows when
+    # it heard something cannot resolve two memories that disagree. NULL
+    # valid_to means "still true as far as we know".
+    Column("valid_from", TIMESTAMP(timezone=True), nullable=True),
+    Column("valid_to", TIMESTAMP(timezone=True), nullable=True),
+
+    # Provenance — "learned in this chat". SET NULL, not CASCADE: a memory is a
+    # durable conclusion that must outlive the conversation that produced it
+    # (same reasoning as chat_artifact.message_id).
+    Column("source_chat_id", UUID(as_uuid=False), ForeignKey("chat.id", ondelete="SET NULL"), nullable=True),
+    Column("source_message_id", UUID(as_uuid=False), ForeignKey("message.id", ondelete="SET NULL"), nullable=True),
+
+    # Reconciliation lineage. An UPDATE decision inserts the new row and points
+    # the old one here before soft-deleting it, so "what did we believe, and
+    # when did we stop believing it" is answerable. Self-FK SET NULL so the
+    # superseded row survives deletion of its successor.
+    Column(
+        "superseded_by",
+        UUID(as_uuid=False),
+        ForeignKey("user_memory.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+
+    # Usage telemetry, stamped off the critical path. Drives decay: an unused,
+    # unpinned, low-confidence memory is the first thing to expire.
+    Column("last_used_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("use_count", Integer, nullable=False, server_default=text("0")),
+    # "Always remember this" — exempt from decay and from the retrieval token
+    # budget's drop list.
+    Column("pinned", Boolean, nullable=False, server_default=text("false")),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+    Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
+
+    CheckConstraint("scope IN ('user', 'workspace', 'tenant')", name="ck_user_memory_scope"),
+    CheckConstraint("kind IN ('fact', 'preference', 'correction')", name="ck_user_memory_kind"),
+    CheckConstraint("origin IN ('auto', 'explicit', 'manual')", name="ck_user_memory_origin"),
+    CheckConstraint(
+        "status IN ('candidate', 'active', 'proposed')", name="ck_user_memory_status"
+    ),
+    CheckConstraint("observation_count >= 1", name="ck_user_memory_observation_count"),
+    CheckConstraint(
+        "valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from",
+        name="ck_user_memory_validity_order",
+    ),
+    CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_user_memory_confidence_range"),
+    CheckConstraint("length(content) > 0", name="ck_user_memory_content_not_blank"),
+    # A memory cannot supersede itself — an applier bug would otherwise create a
+    # row that is both live and retired.
+    CheckConstraint("superseded_by IS NULL OR superseded_by <> id", name="ck_user_memory_no_self_supersede"),
+
+    # The hot path: every list/retrieve is
+    # WHERE tenant_id = :t AND user_id = :u AND deleted_at IS NULL.
+    Index(
+        "ix_user_memory_tenant_user",
+        "tenant_id", "user_id",
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
+    # Retrieval only ever wants `active`; the settings tab wants everything.
+    Index(
+        "ix_user_memory_active",
+        "tenant_id", "user_id", "status",
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
+    # Exact-duplicate guard, per user. Partial on deleted_at so re-learning
+    # something the user previously deleted is allowed (they may have deleted it
+    # because it was stale, not because it was wrong forever).
+    Index(
+        "ix_user_memory_dedupe",
+        "tenant_id", "user_id", "content_hash",
+        unique=True,
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
+    # "What did this chat teach us" — provenance drill-down and per-chat purge.
+    Index("ix_user_memory_source_chat", "source_chat_id"),
+)
+
+
+# ---------------------------------------------------------------------------
+# user_memory_settings (NC-519) — per-user opt-in for the memory layer.
+#
+# The platform's FIRST user-preferences table: today the Preferences tab writes
+# localStorage only. Kept deliberately narrow for that reason — this is not a
+# general-purpose user-settings bag, and it should not become one.
+#
+# ``enabled`` defaults TRUE: memory is opt-OUT, not opt-in. The gate that keeps
+# an environment dark is the service-level ``unified_memory_enabled`` flag, which
+# still ships False — so nothing is captured anywhere until an operator turns the
+# feature on for that deployment. Within an enabled deployment, though, every
+# user captures without having to find a settings page first.
+#
+# Note what this means and does not mean: a user who has never opened Settings →
+# Memory has NO ROW here, and the read path resolves that absence to the same
+# defaults, so "never asked" and "opted in" are deliberately indistinguishable.
+# Incognito chats remain excluded regardless.
+#
+# Mirrors the shape of workspace_da_settings: scope column as PK, booleans,
+# timestamps.
+# ---------------------------------------------------------------------------
+user_memory_settings = Table(
+    "user_memory_settings",
+    metadata,
+
+    Column(
+        "user_id",
+        UUID(as_uuid=False),
+        ForeignKey("user.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("tenant_id", UUID(as_uuid=False), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False),
+
+    # Master switch. TRUE by default — memory is opt-OUT. Turning it off here is
+    # what stops capture and injection for this user; the service-level
+    # ``unified_memory_enabled`` flag is what keeps a whole environment dark.
+    Column("enabled", Boolean, nullable=False, server_default=text("true")),
+    # Per-kind opt-outs, for the user who wants preferences remembered but not
+    # facts about their role. All TRUE so ``enabled`` alone is the only switch a
+    # user has to find.
+    Column("capture_facts", Boolean, nullable=False, server_default=text("true")),
+    Column("capture_preferences", Boolean, nullable=False, server_default=text("true")),
+    Column("capture_corrections", Boolean, nullable=False, server_default=text("true")),
+
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
+)
+
+
 workspace = Table(
     "workspace",
     metadata,
@@ -1073,6 +1301,19 @@ workspace = Table(
         ARRAY(PgEnum(PillarEnum, name="pillar")),
         nullable=False,
         server_default=text("'{}'::pillar[]"),
+    ),
+    # NC-500 — presentation, NOT capability. `enabled_pillars` says what
+    # the workspace can do; this says whether the chat page offers the
+    # member a choice about it. True (the default) hides the sidebar
+    # pillar picker and pins chat to Unified, which spans every enabled
+    # pillar anyway — the CXO case, where we configure the pillars and
+    # the executive should never see the plumbing. An admin turns it off
+    # to hand the picker back.
+    Column(
+        "hide_chat_pillars",
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
     ),
     Column("created_by", UUID(as_uuid=False), ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
@@ -1990,6 +2231,144 @@ workspace_curation_da_column = Table(
 
 
 # ---------------------------------------------------------------------------
+# workspace_da_suggested_question — the stored pool of chat starter questions
+# for one workspace (NC-570).
+#
+# Until this table existed, the chat empty state composed its DA cards from
+# three string templates on the request path. The result was honest after
+# NC-567, because nothing reached a sentence without a business name and a
+# statistical profile behind it, but it was still assembled prose. A senior,
+# non technical reader does not recognise "Break down Net revenue by Sales
+# region in Sales orders" as a question they asked. Generation therefore moves
+# into the enrichment run, where a language model writes the sentence against
+# the same evidence, and the result is stored here.
+#
+# One row is one question. The row carries the catalog identity the serve
+# boundary needs, so nothing has to be recovered from the finished sentence:
+#
+#   * da_catalog_table_id / da_catalog_schema_id — where the question comes
+#     from. The permission filter walks column -> table -> schema, so it needs
+#     the schema as well as the table.
+#   * da_catalog_column_ids — every column the sentence names. This is what
+#     makes the NC-568 filter possible: a member denied one column must not
+#     read its business name off a suggested question. NOT NULL, because a
+#     question that records no column cannot be proved safe and the filter
+#     fails closed on an empty list.
+#
+# ``shape`` is load bearing and not decoration. It is the question's kind — a
+# trend, a breakdown, a total, a ranking — and it carries the icon the client
+# renders. The serve boundary groups the pool by shape and draws round the
+# groups in turn, so four cards on one screen are four different kinds of
+# question rather than one sentence repeated four times. Storing the icon
+# alone would work today and lose the grouping the moment two shapes shared an
+# icon, so the kind is stored and the icon is derived from it.
+#
+# ``origin`` matches the ``description_origin`` house style on the
+# workspace_curation_da_* overlays: a short string with a check constraint
+# rather than a native enum, so adding a value later is a constraint change
+# and not a type migration. 'ai' is what the enrichment run writes; 'template'
+# records a row put here by the deterministic composer, which keeps the door
+# open for a workspace that will never run a model.
+#
+# Every foreign key cascades. A removed connection, schema or table takes its
+# questions with it, because a question about a table that no longer exists is
+# exactly the "names something that isn't there" failure this whole feature
+# was written to remove. ``generated_by_run_id`` is the one exception: it is
+# provenance, so a deleted enrichment run leaves the questions in place with a
+# NULL run.
+# ---------------------------------------------------------------------------
+
+workspace_da_suggested_question = Table(
+    "workspace_da_suggested_question",
+    metadata,
+
+    Column("id", UUID(as_uuid=False), primary_key=True, default=uuid.uuid4),
+    Column(
+        "workspace_id",
+        UUID(as_uuid=False),
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "tenant_id",
+        UUID(as_uuid=False),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # The DA connection is an ``integration`` row, and the column keeps the DA
+    # domain name the rest of the catalog uses (see da_catalog_schema).
+    Column(
+        "da_connection_id",
+        UUID(as_uuid=False),
+        ForeignKey("integration.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "da_catalog_schema_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_catalog_schema.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "da_catalog_table_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_catalog_table.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # JSONB list[str] of da_catalog_column.id. A list and not a join table:
+    # the value is read whole, never queried by element, and it is rewritten
+    # with its question rather than edited.
+    Column("da_catalog_column_ids", JSONB, nullable=False),
+
+    Column("question_text", Text, nullable=False),
+    Column("shape", String(32), nullable=False),
+    Column(
+        "origin",
+        String(8),
+        nullable=False,
+        server_default=text("'ai'"),
+    ),
+
+    # Provenance. SET NULL so pruning old runs never deletes the pool.
+    Column(
+        "generated_by_run_id",
+        UUID(as_uuid=False),
+        ForeignKey("da_enrichment_run.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "generated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+    Column(
+        "updated_at",
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    ),
+
+    CheckConstraint(
+        "origin IN ('template', 'ai')",
+        name="ck_wdsq_origin",
+    ),
+    # The serve path's only lookup: this workspace's pool, narrowed to the
+    # connections it may currently query.
+    Index("ix_wdsq_workspace_connection", "workspace_id", "da_connection_id"),
+    # The write path's lookup: delete then insert per table.
+    Index("ix_wdsq_table", "da_catalog_table_id"),
+)
+
+
+# ---------------------------------------------------------------------------
 # workspace_da_settings — workspace-level DA settings (DA-P1l.1.0).
 #
 # Holds workspace-level toggles that govern AI description generation
@@ -2736,6 +3115,10 @@ dashboard = Table(
         ForeignKey("user.id", ondelete="SET NULL"),
         nullable=True,
     ),
+    # Pinned to the top of the sidebar's dashboard list. Mirrors chat.pinned so
+    # both rails sort by the same rule; a user preference about their workspace,
+    # which is why it is a column and not localStorage.
+    Column("pinned", Boolean, nullable=False, server_default=text("false")),
     Column("published_at", TIMESTAMP(timezone=True), nullable=True),
     Column(
         "created_at",
@@ -2797,7 +3180,12 @@ dashboard_widget = Table(
     ),
     Column("title", String(255), nullable=False),
     Column("description", Text, nullable=True),
-    # data_binding: { connection_id, schema_name, sql, params? }
+    # data_binding: relational { connection_id, schema_name, sql, params? }
+    #            or document   { connection_id, database, collection, pipeline }
+    #   A widget re-executes its query on every load. Restricting that query to
+    #   SQL made dashboards a relational-only surface: a chart over a Mongo
+    #   collection could be produced in chat but never kept. Both forms are
+    #   validated by DashboardWidgetDataBinding, which enforces exactly one.
     # viz_spec: { chart_type, x_axis, y_axis, series?, format?, ... }
     # grounding_metadata: { tables[], columns[], curator, last_validated_at }
     # All JSONB so we can partial-update specific keys without
@@ -2808,6 +3196,19 @@ dashboard_widget = Table(
     # The build-chat message that proposed this widget. SET NULL on
     # message purge (compliance) — the widget itself is the ground
     # truth; chat history is the audit trail.
+    # Which chat chart this widget was promoted from (pin-to-dashboard).
+    #   Not derivable from created_by_message_id: native da_chart artifacts are
+    #   persisted before the assistant message is finalized, so
+    #   chat_artifact.message_id is NULL by design — and a message can hold
+    #   several charts, so a message id cannot say WHICH one this came from.
+    #   SET NULL on delete, like created_by_message_id: the widget outlives its
+    #   provenance because the query it runs is its own.
+    Column(
+        "source_artifact_id",
+        UUID(as_uuid=False),
+        ForeignKey("chat_artifact.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     Column(
         "created_by_message_id",
         UUID(as_uuid=False),
@@ -2830,6 +3231,14 @@ dashboard_widget = Table(
 
     # Canonical render-time query — every dashboard load hits this.
     Index("ix_dashboard_widget_dashboard", "dashboard_id"),
+    # Reverse lookup: "which dashboards hold this chat chart?" — asked by the
+    # chat card on render, so it needs to be an index and not a scan. Partial,
+    # since the column is NULL for every build-agent-proposed widget.
+    Index(
+        "ix_dashboard_widget_source_artifact",
+        "source_artifact_id",
+        postgresql_where=text("source_artifact_id IS NOT NULL"),
+    ),
 )
 
 
@@ -3282,6 +3691,19 @@ integration_workspace_enablement = Table(
     ),
     # Subset of integration.capabilities granted to this workspace.
     Column("capabilities_enabled", ARRAY(Text), nullable=False),
+    # Audience (NC-637) — who in this workspace may use the placed capabilities.
+    #   'all_members'      every member of the workspace (an explicit deny grant
+    #                      still excludes one)
+    #   'selected_members' only members holding an explicit allow grant
+    # Placement admits the workspace; this narrows it. Text, not a PgEnum, so a
+    # third mode never needs a type migration — the same call
+    # integration_member_grant.capability already makes.
+    Column(
+        "member_access",
+        String(32),
+        nullable=False,
+        server_default=text("'all_members'"),
+    ),
     Column("display_name_override", String(255), nullable=True),
     Column(
         "status",
