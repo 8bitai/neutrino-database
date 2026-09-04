@@ -3691,6 +3691,19 @@ integration_workspace_enablement = Table(
     ),
     # Subset of integration.capabilities granted to this workspace.
     Column("capabilities_enabled", ARRAY(Text), nullable=False),
+    # Audience (NC-637) — who in this workspace may use the placed capabilities.
+    #   'all_members'      every member of the workspace (an explicit deny grant
+    #                      still excludes one)
+    #   'selected_members' only members holding an explicit allow grant
+    # Placement admits the workspace; this narrows it. Text, not a PgEnum, so a
+    # third mode never needs a type migration — the same call
+    # integration_member_grant.capability already makes.
+    Column(
+        "member_access",
+        String(32),
+        nullable=False,
+        server_default=text("'all_members'"),
+    ),
     Column("display_name_override", String(255), nullable=True),
     Column(
         "status",
